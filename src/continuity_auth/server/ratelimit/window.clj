@@ -29,6 +29,19 @@
 
 (defn- now-ms ^long [^java.util.Date d] (.getTime d))
 
+(defn bucket-key
+  "Per-(identity, window, start) slot key written into `:bucket/key`.
+
+  `:bucket/key` is `:db.unique/identity` in the schema, so two concurrent
+  transacts at the same (identity, window, start) upsert into a single
+  entity instead of fragmenting the counter across two. The remaining
+  read-modify-write race (both writers observe count=N, both write
+  count=N+1) is bounded to at most (concurrent_writers - 1) lost
+  increments per race window — the existing acceptable error documented
+  on `check-and-increment!`."
+  ^String [identity-eid window ^java.util.Date start-date]
+  (str (long identity-eid) "|" (name window) "|" (now-ms start-date)))
+
 (defn align-to-window
   "Return the java.util.Date marking the start of the W-second-aligned
   bucket containing `t`."
@@ -107,7 +120,8 @@
       (let [tx (if current
                  [{:db/id        (:db/id current)
                    :bucket/count (inc current-cnt)}]
-                 [{:bucket/identity identity-eid
+                 [{:bucket/key      (bucket-key identity-eid window current-start)
+                   :bucket/identity identity-eid
                    :bucket/window   window
                    :bucket/start    current-start
                    :bucket/count    1}])]
@@ -170,7 +184,8 @@
                 (if current
                   {:db/id        (:db/id current)
                    :bucket/count (inc (or (:bucket/count current) 0))}
-                  {:bucket/identity identity-eid
+                  {:bucket/key      (bucket-key identity-eid window current-start)
+                   :bucket/identity identity-eid
                    :bucket/window   window
                    :bucket/start    current-start
                    :bucket/count    1}))))

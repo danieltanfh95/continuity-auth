@@ -93,10 +93,12 @@
           (if (:allowed? window-decs)
             (let [tx (merge/classification-tx
                       classification incoming score-before scoring now)]
-              ;; Decouple the bookkeeping write from the response with
-              ;; async transact. The decision was computed from the read
-              ;; snapshot; the write effects subsequent reads.
-              (storage/transact-async! store tx)
+              ;; SYNC transact for score + request event. Async would let
+              ;; two concurrent verifies for the same identity each read
+              ;; the same `score-before` and write the same `score-after`,
+              ;; flattening penalties to one-per-burst. Latency cost is
+              ;; <1 ms in practice; correctness wins.
+              (storage/transact! store tx)
               {:status  200
                :headers {"Content-Type" "application/json; charset=utf-8"}
                :body    {:ok             true
@@ -107,8 +109,8 @@
                          :tier           (name tier-now)
                          :retry_after_ms 0}})
             (do
-              ;; Record the throttle as a request event for observability
-              ;; without affecting score.
+              ;; Throttle event log doesn't update score, so async is fine
+              ;; here — no read-modify-write race to lose.
               (storage/transact-async!
                store
                [{:request/identity identity-eid

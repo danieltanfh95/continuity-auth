@@ -155,3 +155,47 @@
                 (is (true? (:allowed? r)))
                 (is (> (:approx-count r) last-count))
                 (recur (:approx-count r) (inc i))))))))))
+
+;; -- Bucket-key uniqueness (codex C5) --------------------------------------
+;;
+;; Before `:bucket/key`, two concurrent verifies for the same identity at
+;; the same window boundary each created their own bucket entity — the
+;; counter then fragmented across N entities. Subsequent reads only saw
+;; one of them.
+;;
+;; With `:bucket/key` as `:db.unique/identity`, the slot is unique; all
+;; concurrent writes upsert into a single entity.
+
+(deftest bucket-key-uniqueness-under-concurrent-writes
+  (testing "N concurrent check-and-increment! calls at the same boundary
+            produce exactly ONE bucket entity, not N."
+    (with-store
+      (fn [store]
+        (let [eid (new-identity! store)
+              base (* 60000 (quot (System/currentTimeMillis) 60000))
+              t    (Date. base)
+              n    16
+              latch (java.util.concurrent.CountDownLatch. 1)
+              pool  (java.util.concurrent.Executors/newFixedThreadPool n)
+              futs  (mapv (fn [_]
+                            (.submit pool
+                                     ^Callable
+                                     (fn []
+                                       (.await latch)
+                                       (window/check-and-increment! store eid :1m 60 1000 t))))
+                          (range n))
+              _     (.countDown latch)
+              _     (doseq [^java.util.concurrent.Future f futs] (.get f))
+              _     (.shutdown pool)
+              snap  (storage/snapshot store)
+              start-ms (.getTime (window/align-to-window t 60))
+              key-str  (window/bucket-key eid :1m (Date. start-ms))
+              ;; Count entities at the slot — must be exactly 1.
+              entities (storage/q store snap
+                                  '[:find [?e ...]
+                                    :in $ ?k
+                                    :where [?e :bucket/key ?k]]
+                                  [key-str])]
+          (is (= 1 (count entities))
+              (str "expected exactly one bucket entity at slot, got "
+                   (count entities))))))))
