@@ -20,8 +20,16 @@
 
 (def ^:const schema-version
   "Monotonically increasing schema version. Bump on any non-additive change.
-  Additive changes (new attributes, new entities) may share a version."
-  1)
+  Additive changes (new attributes, new entities) may share a version.
+
+  v2 (2026-05-25): add `:bucket/key` as the unique-identity slot key for
+  rate-limit buckets. Before v2 there was no uniqueness on
+  `(identity, window, start)`, so concurrent verify-paths at a window
+  boundary each created their own bucket and the counter fragmented across
+  them. With `:bucket/key` set to `\"<identity-eid>|<window>|<start-ms>\"`
+  and `:db.unique/identity`, all writes to the same slot upsert into a
+  single entity."
+  2)
 
 (def schema
   "Datalevin attribute schema, one entry per attribute. The schema is
@@ -196,6 +204,13 @@
    {:db/valueType :db.type/boolean}
 
    ;; -- bucket (sliding-window-counter accounting) ------------------------
+   ;; `:bucket/key` is the slot key — `"<identity-eid>|<window-name>|<start-ms>"` —
+   ;; with `:db.unique/identity` so concurrent writes upsert into one entity
+   ;; instead of fragmenting the counter across many.
+   :bucket/key
+   {:db/valueType :db.type/string
+    :db/unique    :db.unique/identity}
+
    :bucket/identity
    {:db/valueType :db.type/ref
     :db/index     true}

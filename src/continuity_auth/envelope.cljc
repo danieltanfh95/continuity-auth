@@ -13,7 +13,7 @@
   ============================================================================
   Signing input layout (binary, length-prefixed, big-endian uint32 lengths):
 
-      \"FPL1\\n\"                          ; literal version tag, 5 bytes
+      \"FPL2\\n\"                          ; literal version tag, 5 bytes
       uint32-BE(len) || method-utf8       ; e.g. \"POST\"
       uint32-BE(len) || path-utf8         ; pathname + canonical query string
       uint32-BE(len) || body-sha256       ; 32 raw bytes (BLAKE2/SHA not allowed
@@ -34,7 +34,12 @@
 
 ;; -- platform shims --------------------------------------------------------
 
-(def ^:const version-tag-str "FPL1\n")
+(def ^:const version-tag-str
+  "Wire+canonical version tag. Bumped from FPL1 to FPL2 on 2026-05-25 in
+  conjunction with the route-binding tightening on control endpoints; old
+  envelopes signed under FPL1 will not verify against the FPL2 server.
+  The cljs client always emits the current tag."
+  "FPL2\n")
 
 (def ^:const body-sha256-len 32)
 (def ^:const nonce-len       16)
@@ -240,6 +245,23 @@
        (dotimes [i n] (aset out i (.charCodeAt raw i)))
        out)))
 
+;; -- intent strings for control-endpoint route binding -------------------
+
+(defn rotate-key-intent-utf8
+  "UTF-8 bytes of the rotate-key intent string. The client signs an
+  envelope whose `:body-sha256` is `sha256(this)`; the server verifies
+  by reconstructing from `(new-pubkey-bytes, new-alg)` in the request
+  payload. Binding the signature to the new key prevents an attacker
+  who captured any other envelope from this user from re-purposing it
+  to install their own key.
+
+  Shape: `\"<b64url(new-pubkey-bytes)>:<name(new-alg)>\"`.
+
+  Producer: cljs client (rotate-key signer). Consumer: server
+  `handlers/rotate-key`. Contract: byte-identical on both platforms."
+  [^bytes new-pubkey-bytes new-alg]
+  (utf8-encode (str (b64url-encode new-pubkey-bytes) ":" (name new-alg))))
+
 ;; -- envelope ↔ wire --------------------------------------------------------
 
 (def required-envelope-keys
@@ -282,10 +304,16 @@
     signature             (assoc :sig (b64url-encode signature))))
 
 (defn wire->envelope
-  "Parse a wire-format map back into an envelope with byte-array fields."
-  [{:keys [v method path body_sha ts nonce fp key_id host_user_id alg sig]
-    :as wire}]
-  (when (and v (not= v version-tag-str))
+  "Parse a wire-format map back into an envelope with byte-array fields.
+
+  The wire must carry an explicit `:v` matching `version-tag-str`. We do
+  NOT silently accept envelopes without `:v` — that would let a future
+  endpoint that reads `:method/:path/:body-sha256` directly from the wire
+  forget to re-derive the canonical bytes and accept any version."
+  [{:keys [v method path body_sha ts nonce fp key_id host_user_id alg sig]}]
+  (when (nil? v)
+    (throw (ex-info "envelope missing version tag" {:expected version-tag-str})))
+  (when (not= v version-tag-str)
     (throw (ex-info "envelope version mismatch" {:got v :expected version-tag-str})))
   (let [env (cond-> {:method        method
                      :path          path

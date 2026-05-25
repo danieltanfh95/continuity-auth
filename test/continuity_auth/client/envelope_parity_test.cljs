@@ -54,7 +54,7 @@
     (is (= 0x46 (aget bs 0)) "F")
     (is (= 0x50 (aget bs 1)) "P")
     (is (= 0x4c (aget bs 2)) "L")
-    (is (= 0x31 (aget bs 3)) "1")
+    (is (= 0x32 (aget bs 3)) "2")
     (is (= 0x0a (aget bs 4)) "newline")))
 
 (deftest canonical-bytes-method-length-prefix

@@ -110,7 +110,7 @@ async function sha256(bytes) {
 
 // Mirrors `continuity-auth.envelope/canonical-bytes` in cljs / clj. Field
 // order MUST match exactly:
-//   "FPL1\n" || LEN(method) || method
+//   "FPL2\n" || LEN(method) || method
 //          || LEN(path) || path
 //          || LEN(body-sha) || body-sha            (32 bytes raw)
 //          || LEN(ts) || ts
@@ -120,7 +120,7 @@ async function sha256(bytes) {
 //          || LEN(key-id) || key-id                (32 bytes raw)
 function canonicalBytes(env) {
   return concat(
-    utf8("FPL1\n"),
+    utf8("FPL2\n"),
     lengthPrefixedString(env.method),
     lengthPrefixedString(env.path),
     lengthPrefixed(env.bodySha256),

@@ -88,9 +88,15 @@
      :pubkey-b64 (envelope/b64url-encode pk-bytes)}))
 
 (defn- build-verify-envelope
-  [{:keys [sk pk-bytes ts host-user-id fp-digest method path]}]
+  "Builds a wire envelope signed by `sk` and bound to `(method, path)`.
+
+  `:body-sha256` is the intent-binding hash. For /v1/verify and /v1/revoke-key
+  it is sha256(\"\") (the default). For /v1/rotate-key the caller must pass
+  the rotate-key intent-sha — sha256(b64url(new-pubkey) + \":\" + name(new-alg))
+  — which the handler enforces via `enforce-route-binding!`."
+  [{:keys [sk pk-bytes ts host-user-id fp-digest method path body-sha256]}]
   (let [nonce-bytes (let [b (byte-array 16)] (.nextBytes (SecureRandom.) b) b)
-        body-sha    (sha256 (.getBytes "" "UTF-8"))
+        body-sha    (or body-sha256 (sha256 (.getBytes "" "UTF-8")))
         key-id      (sha256 pk-bytes)
         env         {:method        method
                      :path          path
@@ -314,7 +320,10 @@
               rot-env (build-verify-envelope
                        {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
                         :ts (ts) :host-user-id ""
-                        :fp-digest fp :method "POST" :path "/v1/rotate-key"})
+                        :fp-digest fp :method "POST" :path "/v1/rotate-key"
+                        :body-sha256 (sha256
+                                       (envelope/rotate-key-intent-utf8
+                                         (:pk-bytes kp2) :ed25519))})
               rot (http-post port "/v1/rotate-key"
                              {:envelope   rot-env
                               :new-pubkey new-pub-b64

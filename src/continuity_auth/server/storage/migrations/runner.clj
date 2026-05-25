@@ -24,7 +24,16 @@
   code's current schema-version."
   [;; -- v0 → v1: initial install --------------------------------------
    [0 1 (fn install-v1 [storage]
-          (protocol/transact! storage [{:schema/version 1}]))]])
+          (protocol/transact! storage [{:schema/version 1}]))]
+
+   ;; -- v1 → v2: add :bucket/key for slot uniqueness ------------------
+   ;; The new attribute is declared in the schema map; Datalevin's
+   ;; schema-on-open picks it up. Existing buckets (if any survived
+   ;; from a pre-v2 deploy) are left as-is — they have no `:bucket/key`
+   ;; and won't collide with new keyed buckets. The next sweep at the
+   ;; window's expiry retracts them.
+   [1 2 (fn install-v2 [storage]
+          (protocol/transact! storage [{:schema/version 2}]))]])
 
 (defn- migrations-from [from-version target-version]
   (->> migrations

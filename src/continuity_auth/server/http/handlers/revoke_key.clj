@@ -6,8 +6,13 @@
   is no grace window for explicit revocation (unlike rotation).
 
   Request body:
-    {\"envelope\": <wire-envelope signed by the key to revoke;
-                   envelope.key-id == thumbprint of that key>}
+    {\"envelope\": <wire-envelope, signed for POST /v1/revoke-key,
+                    with body-sha256 = sha256(\"\");
+                    envelope.key-id == thumbprint of the key to revoke>}
+
+  The envelope MUST be route-bound to this endpoint. A signing oracle
+  on any other path (e.g. an XSS that triggers `sign-fetch` against
+  `/api/anything`) cannot drive revocation against the user's key.
 
   Response (200):
     {\"ok\":         true,
@@ -15,15 +20,22 @@
 
   Errors:
     E_BAD_REQUEST  — missing / malformed envelope
-    E_UNAUTHORIZED — signature fails to verify
+    E_UNAUTHORIZED — signature fails OR envelope not bound to this route
     E_FORBIDDEN    — pubkey is already revoked
     E_REPLAY       — envelope nonce already used"
   (:require
    [continuity-auth.envelope :as envelope]
+   [continuity-auth.server.crypto.hash :as hash]
    [continuity-auth.server.http.envelope-check :as ec]
    [continuity-auth.server.http.errors :as errors]
    [continuity-auth.server.http.util :as util]
    [continuity-auth.server.storage.protocol :as storage]))
+
+(def ^:private route-path "/v1/revoke-key")
+
+(def ^:private empty-body-sha256
+  "sha256(``) — the binding body-sha256 for revoke-key envelopes."
+  (hash/sha256 (byte-array 0)))
 
 (defn- read-payload
   [body-params]
@@ -52,7 +64,10 @@
                  :envelope           env
                  :tolerance-seconds  tolerance-seconds
                  :nonce-ttl-seconds  nonce-ttl-seconds
-                 :now                now})
+                 :now                now
+                 :expect             {:method      "POST"
+                                      :path        route-path
+                                      :body-sha256 empty-body-sha256}})
           identity-eid (util/identity-eid-of rec)
           tx (util/revoke-tx {:pubkey-eid   (:db/id rec)
                               :identity-eid identity-eid

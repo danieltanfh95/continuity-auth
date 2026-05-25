@@ -8,14 +8,17 @@
     4. Resolve the pubkey:
          - via :key-id lookup in storage (bootstrap=no; verify=yes), OR
          - via an inline pubkey payload (bootstrap path).
-    5. Verify the signature against the canonical bytes.
-    6. Check + atomically record the nonce.
+    5. **Route-binding** check: envelope.method/path/body-sha256 match the
+       endpoint the request actually hit (control endpoints only).
+    6. Verify the signature against the canonical bytes.
+    7. Check + atomically record the nonce.
 
   Returns either:
     {:ok? true  :envelope <envelope-map> :pubkey-record <record-or-payload>}
     OR throws a typed exception via errors/fail!."
   (:require
    [continuity-auth.envelope :as envelope]
+   [continuity-auth.server.crypto.hash :as hash]
    [continuity-auth.server.crypto.pubkey :as pubkey]
    [continuity-auth.server.crypto.verify :as verify]
    [continuity-auth.server.http.errors :as errors]
@@ -65,6 +68,28 @@
         (errors/fail! :E_FORBIDDEN "pubkey revoked")))
     record))
 
+;; -- route binding --------------------------------------------------------
+
+(defn enforce-route-binding!
+  "Verify that the envelope's `:method`, `:path`, and (if `:expect-body-sha256`
+  is supplied) `:body-sha256` match the endpoint this request actually hit.
+
+  `expect` is `{:method <upper-string>
+                :path   <string>
+                :body-sha256 <bytes-or-nil>}`.
+
+  Throws `:E_UNAUTHORIZED` on mismatch. We use a single error code (not
+  three) so the public response cannot disclose which axis failed."
+  [envelope {:keys [method path body-sha256] :as _expect}]
+  (when (not= (:method envelope) method)
+    (errors/fail! :E_UNAUTHORIZED "envelope route binding failed"))
+  (when (not= (:path envelope) path)
+    (errors/fail! :E_UNAUTHORIZED "envelope route binding failed"))
+  (when (and body-sha256
+             (not (hash/constant-time-equal?
+                   ^bytes (:body-sha256 envelope) ^bytes body-sha256)))
+    (errors/fail! :E_UNAUTHORIZED "envelope route binding failed")))
+
 ;; -- signature verification ------------------------------------------------
 
 (defn verify-signature!
@@ -90,9 +115,18 @@
 (defn verify-existing-envelope!
   "End-to-end verification for /verify, /rotate-key, /revoke-key paths.
 
-  Returns the pubkey record on success."
-  [{:keys [store snap envelope tolerance-seconds nonce-ttl-seconds now]}]
+  Returns the pubkey record on success.
+
+  `:expect` (optional) — when supplied, the envelope must be
+  route-bound to that method/path/body-sha256 before the signature is
+  considered. Control endpoints (rotate-key, revoke-key) MUST pass an
+  `:expect`. /verify does NOT pass one — the host backend is
+  responsible for cross-checking envelope.path against the request it
+  is gating."
+  [{:keys [store snap envelope tolerance-seconds nonce-ttl-seconds now expect]}]
   (check-timestamp! envelope tolerance-seconds now)
+  (when expect
+    (enforce-route-binding! envelope expect))
   (let [record (resolve-existing-pubkey! store snap envelope now)]
     (verify-signature! envelope (:pubkey/bytes record) (:pubkey/alg record))
     ;; Nonce check happens AFTER signature verify so attackers cannot
@@ -103,10 +137,16 @@
     record))
 
 (defn verify-bootstrap-envelope!
-  "/bootstrap path: the pubkey is in the request payload, not in the DB."
+  "/bootstrap path: the pubkey is in the request payload, not in the DB.
+
+  `:expect` is mandatory here — bootstrap envelopes must be bound to
+  POST /v1/bootstrap so a signing oracle on any other path cannot
+  install a new identity."
   [{:keys [store envelope pubkey-bytes alg tolerance-seconds
-            nonce-ttl-seconds now]}]
+            nonce-ttl-seconds now expect]}]
   (check-timestamp! envelope tolerance-seconds now)
+  (when expect
+    (enforce-route-binding! envelope expect))
   ;; Confirm the envelope's key-id matches the SHA-256 thumbprint of
   ;; the supplied pubkey bytes — otherwise the client is claiming a
   ;; pubkey it does not actually present.

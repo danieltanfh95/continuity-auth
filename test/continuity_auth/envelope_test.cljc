@@ -123,12 +123,12 @@
     (is (= (hex a) (hex b)))))
 
 (deftest canonical-bytes-known-prefix
-  (testing "starts with the literal version tag 'FPL1\\n'"
+  (testing "starts with the literal version tag 'FPL2\\n'"
     (let [bs (env/canonical-bytes test-env)]
       (is (= 0x46 (env/ba-get bs 0))) ; F
       (is (= 0x50 (env/ba-get bs 1))) ; P
       (is (= 0x4c (env/ba-get bs 2))) ; L
-      (is (= 0x31 (env/ba-get bs 3))) ; 1
+      (is (= 0x32 (env/ba-get bs 3))) ; 2
       (is (= 0x0a (env/ba-get bs 4))))) ; \n
   (testing "first uint32 after tag is len(method)"
     (let [bs (env/canonical-bytes test-env)]
@@ -221,6 +221,12 @@
   (let [wire (assoc (env/envelope->wire test-env) :v "FPL999\n")]
     (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
                  (env/wire->envelope wire)))))
+
+(deftest wire-missing-version-rejected
+  (testing "the :v tag is mandatory; absence is an error, not silent FPL1 acceptance"
+    (let [wire (dissoc (env/envelope->wire test-env) :v)]
+      (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                   (env/wire->envelope wire))))))
 
 ;; -- base64url -------------------------------------------------------------
 
