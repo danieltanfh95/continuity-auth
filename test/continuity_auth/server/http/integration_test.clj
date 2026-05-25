@@ -656,3 +656,141 @@
               "registry should expose fpl_verify_total")
           (is (re-find #"fpl_verify_total\{[^}]*outcome=\"ok\"[^}]*\}\s+1\.0" text)
               (str "expected fpl_verify_total{outcome=ok,...} = 1.0; got:\n" text)))))))
+
+;; -- Adversarial: route-binding (codex C1/C2/C3) --------------------------
+
+(deftest rotate-key-rejects-wrong-route-binding
+  ;; A captured envelope intended for /v1/verify (or any other path)
+  ;; must NOT be replayable as /v1/rotate-key. Likewise, an envelope with
+  ;; a body-sha that doesn't match sha256(intent-string) must be rejected
+  ;; even if the method/path are correct — preventing the "install a
+  ;; different new pubkey than the user signed for" attack.
+  (with-running-system
+    (fn [{:keys [port]}]
+      (let [kp1 (gen-ed25519)
+            fp  (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+            {:keys [wire pubkey-b64]} (build-bootstrap-envelope
+                                        {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
+                                         :ts (iso8601-now) :host-user-id ""
+                                         :fp-digest fp})
+            _ (http-post port "/v1/bootstrap"
+                          {:envelope wire :pubkey pubkey-b64 :alg "ed25519"})
+            kp2 (gen-ed25519)
+            new-pub-b64 (envelope/b64url-encode (:pk-bytes kp2))]
+        (testing "envelope signed for /v1/verify cannot rotate"
+          (let [env (build-verify-envelope
+                     {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
+                      :ts (iso8601-now) :host-user-id ""
+                      :fp-digest fp :method "POST" :path "/v1/verify"})
+                r (http-post port "/v1/rotate-key"
+                              {:envelope env :new-pubkey new-pub-b64
+                               :new-alg "ed25519"})]
+            (is (= 401 (:status r))
+                (str "rotate-key must reject /v1/verify-bound envelope: " (:body r)))
+            (is (= "E_UNAUTHORIZED" (-> r :body :code)))))
+        (testing "envelope signed for rotate-key but with wrong body-sha (mismatched intent) is rejected"
+          (let [;; Wrong body-sha: sha256("") instead of sha256(intent)
+                env (build-verify-envelope
+                     {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
+                      :ts (iso8601-now) :host-user-id ""
+                      :fp-digest fp :method "POST" :path "/v1/rotate-key"})
+                r (http-post port "/v1/rotate-key"
+                              {:envelope env :new-pubkey new-pub-b64
+                               :new-alg "ed25519"})]
+            (is (= 401 (:status r))
+                (str "rotate-key must reject mismatched intent body-sha: " (:body r)))))
+        (testing "envelope signed for rotate-key with body-sha = intent(OTHER pubkey) is rejected"
+          ;; The attacker signed for intent(victim's chosen new key), but
+          ;; tries to replay with `:new-pubkey` of a DIFFERENT key. The
+          ;; server's intent body-sha is derived from the request body's
+          ;; new-pubkey, so the captured envelope's body-sha won't match.
+          (let [other (gen-ed25519)
+                attacker-intent-sha
+                (sha256 (envelope/rotate-key-intent-utf8
+                          (:pk-bytes other) :ed25519))
+                env (build-verify-envelope
+                     {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
+                      :ts (iso8601-now) :host-user-id ""
+                      :fp-digest fp :method "POST" :path "/v1/rotate-key"
+                      :body-sha256 attacker-intent-sha})
+                r (http-post port "/v1/rotate-key"
+                              {:envelope env :new-pubkey new-pub-b64
+                               :new-alg "ed25519"})]
+            (is (= 401 (:status r))
+                (str "rotate-key must reject intent-replay against different new pubkey: "
+                     (:body r)))))))))
+
+(deftest revoke-key-rejects-wrong-route-binding
+  ;; A captured envelope intended for /v1/verify cannot be replayed
+  ;; against /v1/revoke-key (codex C2 — DoS against any active user).
+  (with-running-system
+    (fn [{:keys [port]}]
+      (let [kp (gen-ed25519)
+            fp (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+            {:keys [wire pubkey-b64]} (build-bootstrap-envelope
+                                        {:sk (:sk kp) :pk-bytes (:pk-bytes kp)
+                                         :ts (iso8601-now) :host-user-id ""
+                                         :fp-digest fp})
+            _ (http-post port "/v1/bootstrap"
+                          {:envelope wire :pubkey pubkey-b64 :alg "ed25519"})
+            ;; Envelope signed for /v1/verify
+            env (build-verify-envelope
+                  {:sk (:sk kp) :pk-bytes (:pk-bytes kp)
+                   :ts (iso8601-now) :host-user-id ""
+                   :fp-digest fp :method "POST" :path "/v1/verify"})
+            r (http-post port "/v1/revoke-key" {:envelope env})]
+        (is (= 401 (:status r))
+            (str "revoke-key must reject /v1/verify-bound envelope: " (:body r)))
+        (is (= "E_UNAUTHORIZED" (-> r :body :code)))))))
+
+(deftest bootstrap-rejects-wrong-route-binding
+  ;; An envelope intended for /v1/verify cannot install a fresh identity
+  ;; via /v1/bootstrap (codex C3 corollary).
+  (with-running-system
+    (fn [{:keys [port]}]
+      (let [kp (gen-ed25519)
+            fp (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+            nonce (let [b (byte-array 16)] (.nextBytes (SecureRandom.) b) b)
+            env {:method "POST"
+                 :path   "/v1/verify"           ; WRONG: not /v1/bootstrap
+                 :body-sha256 (sha256 (.getBytes "" "UTF-8"))
+                 :ts (iso8601-now)
+                 :nonce nonce
+                 :fp-digest fp
+                 :host-user-id ""
+                 :key-id (sha256 (:pk-bytes kp))}
+            sig (ed25519-sign (:sk kp) (envelope/canonical-bytes env))
+            wire (-> (envelope/envelope->wire env)
+                     (assoc :sig (envelope/b64url-encode sig) :alg "ed25519"))
+            r (http-post port "/v1/bootstrap"
+                         {:envelope wire
+                          :pubkey   (envelope/b64url-encode (:pk-bytes kp))
+                          :alg      "ed25519"})]
+        (is (= 401 (:status r)))
+        (is (= "E_UNAUTHORIZED" (-> r :body :code)))))))
+
+(deftest re-bootstrap-of-existing-pubkey-rejected
+  ;; Codex C4: a second bootstrap with the same pubkey must NOT upsert
+  ;; on :pubkey/id and rebind the existing pubkey to a fresh neutral
+  ;; identity (which would reset score/tier/buckets). The handler now
+  ;; explicitly rejects with E_CONFLICT before the unique-identity
+  ;; transact runs.
+  (with-running-system
+    (fn [{:keys [port]}]
+      (let [kp (gen-ed25519)
+            fp (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+            mk (fn []
+                 (build-bootstrap-envelope
+                   {:sk (:sk kp) :pk-bytes (:pk-bytes kp)
+                    :ts (iso8601-now) :host-user-id ""
+                    :fp-digest fp}))
+            first  (http-post port "/v1/bootstrap"
+                              (let [{:keys [wire pubkey-b64]} (mk)]
+                                {:envelope wire :pubkey pubkey-b64 :alg "ed25519"}))
+            _      (is (= 201 (:status first)))
+            second (http-post port "/v1/bootstrap"
+                              (let [{:keys [wire pubkey-b64]} (mk)]
+                                {:envelope wire :pubkey pubkey-b64 :alg "ed25519"}))]
+        (is (= 409 (:status second))
+            (str "second bootstrap must be E_CONFLICT: " (:body second)))
+        (is (= "E_CONFLICT" (-> second :body :code)))))))

@@ -266,6 +266,103 @@
                             (bootstrap-payload envelope pubkey-bytes alg))]
       resp)))
 
+;; -- rotate-key / revoke --------------------------------------------------
+;;
+;; Control endpoints share a structural contract with the server's
+;; `enforce-route-binding!` check:
+;;   - envelope.method = "POST"
+;;   - envelope.path   = the endpoint's canonical route
+;;   - envelope.body-sha256 = sha256(intent-bytes)
+;;     * for /v1/revoke-key: intent-bytes = empty byte-array
+;;     * for /v1/rotate-key: intent-bytes = utf8(b64url(new-pub) ":" name(new-alg))
+;; The intent-bound body-sha prevents a captured envelope from being
+;; replayed to install a DIFFERENT new pubkey (codex C1).
+
+(defn- sign-control-envelope!
+  "Build, sign, and return the wire envelope for a control endpoint.
+  `intent-bytes` is the body the envelope's body-sha256 will bind to —
+  empty for revoke, the rotate-key-intent UTF-8 for rotate."
+  [{:keys [path]} intent-bytes]
+  (ensure-initialized!)
+  (let [{:keys [keypair pubkey-bytes key-id alg host-user-id]} @state]
+    (p/let [fp (fingerprint/compute-digest)
+            body-sha (crypto/sha256 intent-bytes)
+            nonce    (random-bytes 16)
+            ts       (iso8601-now)
+            env  {:method        "POST"
+                  :path          path
+                  :body-sha256   body-sha
+                  :ts            ts
+                  :nonce         nonce
+                  :fp-digest     (:digest fp)
+                  :host-user-id  (or host-user-id "")
+                  :key-id        key-id}
+            wire (sign-envelope! env (:private-key keypair) alg)]
+      {:envelope         wire
+       :pubkey-canonical pubkey-bytes
+       :alg              alg})))
+
+(defn rotate-key!
+  "Generate a new keypair, sign a rotation envelope with the OLD key,
+  POST it to /v1/rotate-key. On success, persist the new keypair and
+  notify other tabs.
+
+  The signed envelope's body-sha256 binds to the intent string
+  `b64url(new-pub) + \":\" + name(new-alg)` — so a captured rotate-key
+  envelope cannot be replayed to install a different new pubkey.
+
+  Returns a promise resolving to the parsed server response."
+  []
+  (ensure-initialized!)
+  (let [{:keys [endpoint]} @state]
+    (tabs/with-keygen-lock
+      (fn []
+        (p/let [old-alg     (:alg @state)
+                new-keypair (crypto/generate-keypair old-alg)
+                new-pub     (crypto/export-public (:public-key new-keypair))
+                intent      (envelope/rotate-key-intent-utf8 new-pub old-alg)
+                {:keys [envelope]} (sign-control-envelope!
+                                    {:path "/v1/rotate-key"}
+                                    intent)
+                resp (http-post endpoint "/v1/rotate-key"
+                                {:envelope   envelope
+                                 :new-pubkey (envelope/b64url-encode new-pub)
+                                 :new-alg    (name old-alg)})]
+          (when (and (>= (:status resp) 200) (< (:status resp) 300))
+            (let [new-key-id (crypto/thumbprint new-pub)]
+              (storage/put-keypair! new-keypair)
+              (storage/write-meta!
+                {:key-id     (envelope/b64url-encode new-key-id)
+                 :alg        (name old-alg)
+                 :created-at (iso8601-now)
+                 :version    1})
+              (tabs/post! {:type "key-rotated"
+                           :key-id (envelope/b64url-encode new-key-id)})
+              (swap! state assoc
+                     :keypair new-keypair
+                     :pubkey-bytes new-pub
+                     :key-id new-key-id)))
+          resp)))))
+
+(defn revoke!
+  "Sign a /v1/revoke-key envelope with the current keypair and POST it.
+  On success, clear local state (the keypair the server just revoked
+  is no longer usable).
+
+  Returns a promise resolving to the parsed server response."
+  []
+  (ensure-initialized!)
+  (let [{:keys [endpoint]} @state]
+    (p/let [{:keys [envelope]} (sign-control-envelope!
+                                {:path "/v1/revoke-key"}
+                                (js/Uint8Array. 0))
+            resp (http-post endpoint "/v1/revoke-key" {:envelope envelope})]
+      (when (and (>= (:status resp) 200) (< (:status resp) 300))
+        (storage/clear-all!)
+        (swap! state assoc :keypair nil :pubkey-bytes nil :key-id nil
+                            :initialized? false))
+      resp)))
+
 (defn clear!
   "Wipe local state. Does NOT call the server. Use `revoke!` for a
   server-side revocation."
