@@ -1,0 +1,51 @@
+;; clojure-lsp configuration for continuity-auth.
+{:linters
+ {:clojure-lsp/unused-public-var
+  {:exclude-when-defined-by
+   #{clojure.test/deftest
+     clojure.test/use-fixtures
+     clojure.test.check.clojure-test/defspec
+     integrant.core/init-key
+     integrant.core/halt-key!
+     integrant.core/prep-key
+     integrant.core/suspend-key!
+     integrant.core/resume-key
+     reitit.core/router}
+   :exclude
+   #{;; Storage / protocol surface — consumed by handlers (forthcoming).
+     continuity-auth.server.storage.protocol
+     continuity-auth.server.storage.protocol/Storage
+     continuity-auth.server.storage.datalevin/open
+     continuity-auth.server.storage.datalevin/ensure-schema-version!
+     continuity-auth.server.storage.schema/schema-version
+     continuity-auth.server.storage.schema/schema
+     continuity-auth.server.storage.schema/host-link-states
+     continuity-auth.server.storage.schema/request-outcomes
+     continuity-auth.server.storage.schema/trust-event-reasons
+     continuity-auth.server.crypto.hash/sha256-of-utf8
+     continuity-auth.server.crypto.hash/constant-time-equal?
+     continuity-auth.server.crypto.pubkey/p256-domain-params
+     continuity-auth.server.crypto.pubkey/parse-canonical
+     continuity-auth.server.crypto.pubkey/alg+canonical->thumbprint
+     continuity-auth.server.crypto.verify/verify
+     continuity-auth.server.replay.nonce/check-and-record!
+     continuity-auth.server.replay.nonce/sweep!
+     continuity-auth.server.replay.nonce/start-sweeper!
+     continuity-auth.server.identity.score
+     continuity-auth.server.identity.score/default-deltas
+     continuity-auth.server.identity.score/axis-mismatch->reasons
+     continuity-auth.server.identity.score/delta-for-reasons
+     continuity-auth.server.identity.score/apply-delta
+     continuity-auth.server.identity.score/decay
+     continuity-auth.server.identity.score/axes-vs-cluster
+     continuity-auth.server.identity.merge/bootstrap-tx
+     continuity-auth.server.identity.merge/classify
+     continuity-auth.server.identity.merge/classification-tx
+     ;; Public constants for downstream / consumers.
+     continuity-auth.crypto/algorithms
+     continuity-auth.crypto/algorithm?
+     continuity-auth.crypto/pubkey-byte-length
+     continuity-auth.crypto/signature-byte-length
+     continuity-auth.crypto/thumbprint-bytes
+     continuity-auth.crypto/sec1-uncompressed-prefix
+     continuity-auth.crypto/p256-coord-bytes}}}}

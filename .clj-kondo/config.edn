@@ -1,0 +1,25 @@
+;; clj-kondo configuration for continuity-auth.
+{:lint-as
+ {clojure.test.check.clojure-test/defspec     clojure.core/def
+  clojure.test.check.properties/for-all       clojure.core/let
+  integrant.core/init-key                     clojure.core/defmethod
+  integrant.core/halt-key!                    clojure.core/defmethod
+  integrant.core/prep-key                     clojure.core/defmethod
+  integrant.core/suspend-key!                 clojure.core/defmethod
+  integrant.core/resume-key                   clojure.core/defmethod}
+
+ :linters
+ {:unused-namespace          {:exclude [clojure.test]}
+  :unused-referred-var       {:exclude {clojure.test [deftest is testing use-fixtures]}}
+  :missing-docstring         {:level :off}
+  :line-length               {:max-line-length 120 :level :warning}
+  :consistent-alias
+  {:aliases {clojure.string                              str
+             clojure.set                                 set
+             clojure.test                                test
+             clojure.test.check.generators               gen
+             clojure.test.check.properties               prop
+             integrant.core                              ig
+             datalevin.core                              d
+             reitit.ring                                 ring
+             malli.core                                  m}}}}

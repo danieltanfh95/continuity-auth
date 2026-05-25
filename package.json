@@ -1,0 +1,48 @@
+{
+  "name": "@continuity-auth/client",
+  "version": "0.1.0-SNAPSHOT",
+  "description": "Zero-auth trust client: signs requests with a non-extractable Web Crypto private key for use with the continuity-auth service.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/npm/continuity_auth.client.core.js",
+  "module": "dist/npm/continuity_auth.client.core.js",
+  "types": "dist/npm/index.d.ts",
+  "files": [
+    "dist/npm/**/*"
+  ],
+  "scripts": {
+    "build": "shadow-cljs release npm-module",
+    "build:dev": "shadow-cljs watch client",
+    "test": "shadow-cljs compile client-test && karma start karma.conf.js --single-run",
+    "test:watch": "karma start karma.conf.js",
+    "bundle-size": "node scripts/check-bundle-size.mjs"
+  },
+  "devDependencies": {
+    "shadow-cljs": "2.28.20",
+    "karma": "6.4.4",
+    "karma-chrome-launcher": "3.2.0",
+    "karma-cljs-test": "0.1.0",
+    "karma-junit-reporter": "2.0.1",
+    "playwright": "1.49.1",
+    "gzip-size": "7.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/continuity-auth/continuity-auth"
+  },
+  "keywords": [
+    "rate-limiting",
+    "fingerprint",
+    "zero-auth",
+    "trust",
+    "web-crypto",
+    "ed25519",
+    "clojurescript"
+  ]
+}

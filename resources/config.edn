@@ -1,0 +1,85 @@
+;; Aero-driven runtime configuration.
+;;
+;; Resolution order: this file is read by aero/read-config with the current
+;; :profile (:dev, :test, :prod). Values can be overridden by env vars using
+;; the #env reader tag, with a default fallback in #or.
+{:continuity-auth/version "0.1.0-SNAPSHOT"
+
+ :server
+ {:host        #or [#env FPL_HTTP_HOST "0.0.0.0"]
+  :port        #long #or [#env FPL_HTTP_PORT "8080"]
+  :join?       false
+  :max-threads #long #or [#env FPL_HTTP_THREADS "64"]
+  :send-server-version? false}
+
+ :datalevin
+ {:uri         #or [#env FPL_DTLV_URI
+                    #profile {:dev  "/tmp/continuity-auth-dev.dtlv"
+                              :test :inmem
+                              :prod nil}]
+  :db-name     #or [#env FPL_DTLV_DB_NAME "continuity-auth"]
+  :write-mode  #keyword #or [#env FPL_DTLV_WRITE_MODE "async"]}  ; :async | :sync
+
+ :replay
+ {:timestamp-tolerance-seconds  60
+  :nonce-ttl-seconds            120
+  :sweeper-interval-seconds     30}
+
+ :ratelimit
+ {:windows  [{:size :1m   :seconds 60}
+             {:size :5m   :seconds 300}
+             {:size :1d   :seconds 86400}]
+  :tiers
+  {:anonymous  {:1m 1   :5m 5    :1d 100}
+   :tracked    {:1m 30  :5m 120  :1d 5000}
+   :penalized  {:1m 0   :5m 1    :1d 20}     ; 1 req per 5 minutes
+   :banned     {:1m 0   :5m 0    :1d 1}}}    ; 1 req per hour ≈ 24/day; tightened to 1
+
+ :scoring
+ {:ls-match                 0.05
+  :host-link                0.30
+  :ip-mismatch             -0.02
+  :fp-mismatch             -0.05
+  :all-mismatch            -0.10
+  :anomaly                 -0.05
+  :decay-per-day-toward-mid 0.01
+  :tier-thresholds
+  {:tracked    0.3
+   :tracked-host-linked 0.5
+   :penalized  0.3
+   :banned     0.05}}
+
+ :trusted-proxies
+ {;; Allowlist of trusted upstream CIDRs that we accept :ip-header from.
+  ;; Empty means we use the direct connection IP. Configure carefully.
+  :cidrs       #or [#env FPL_TRUSTED_PROXY_CIDRS ""]   ; e.g. "10.0.0.0/8,fd00::/8"
+  :ip-header   #or [#env FPL_IP_HEADER "x-forwarded-for"]}
+
+ :hmac
+ {;; Per-integration HMAC keys. In production these come from a secret
+  ;; manager and are loaded by a separate secrets-loader component.
+  :host-keys-path  #or [#env FPL_HOST_HMAC_KEYS_PATH ""]
+  :admin-keys-path #or [#env FPL_ADMIN_HMAC_KEYS_PATH ""]}
+
+ :observability
+ {:metrics-enabled?     true
+  :prometheus-bearer    #or [#env FPL_PROM_BEARER ""]
+  :otel-endpoint        #or [#env FPL_OTEL_ENDPOINT ""]
+  :otel-service-name    "continuity-auth"
+  :log-level            #keyword #or [#env FPL_LOG_LEVEL "info"]}
+
+ :grace
+ {:key-rotation-overlap-seconds  #long #or [#env FPL_KEY_ROT_GRACE_S "86400"]   ; 24h
+  :host-link-cooling-off-seconds #long #or [#env FPL_HOST_LINK_COOL_S "86400"]} ; 24h
+
+ :limits
+ {:max-fp-signals-bytes  4096
+  :max-body-bytes        65536
+  :max-key-bytes         128
+  :max-signature-bytes   128
+  :max-nonce-bytes       64}
+
+ :profiles
+ {:dev   {}
+  :test  {}
+  :prod  {}}}

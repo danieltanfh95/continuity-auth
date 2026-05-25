@@ -1,0 +1,54 @@
+;; shadow-cljs configuration for the continuity-auth frontend library.
+;;
+;; Three build targets:
+;;   :client       — development browser build with hot reload
+;;   :npm-module   — production ESM bundle for npm publishing
+;;   :client-test  — karma test harness
+{:source-paths ["src" "test"]
+
+ :dependencies
+ [[com.cognitect/transit-cljs "0.8.280"]
+  [funcool/promesa            "11.0.678"]
+  [thheller/shadow-cljs       "2.28.20"]]
+
+ :nrepl {:port 0 :middleware []}
+
+ :dev-http {8081 "public"}
+
+ :builds
+ {;; Production npm distribution — single-file ES module, advanced opts.
+  :npm-module
+  {:target          :esm
+   :output-dir      "dist/npm"
+   :modules         {:core {:exports {init             continuity-auth.client.core/init
+                                       verify           continuity-auth.client.core/verify
+                                       bootstrap        continuity-auth.client.core/bootstrap!
+                                       signFetch        continuity-auth.client.core/sign-fetch!
+                                       clear            continuity-auth.client.core/clear!
+                                       setHostUserId    continuity-auth.client.core/set-host-user-id!}}}
+   :compiler-options {:infer-externs    :auto
+                      :elide-asserts    true
+                      :output-feature-set :es2020}
+   :release         {:compiler-options {:optimizations :advanced
+                                         :pretty-print  false
+                                         :source-map    false}}}
+
+  ;; Development browser build (REPL + hot reload)
+  :client
+  {:target            :browser
+   :output-dir        "public/js"
+   :asset-path        "/js"
+   :modules           {:main {:init-fn continuity-auth.client.core/init}}
+   :devtools          {:http-root "public" :http-port 8081}
+   :compiler-options  {:source-map true}
+   :release           {:compiler-options  {:optimizations :advanced
+                                            :infer-externs :auto
+                                            :elide-asserts true
+                                            :pretty-print  false}}}
+
+  ;; Karma test harness
+  :client-test
+  {:target           :karma
+   :output-to        "target/karma-test.js"
+   :ns-regexp        "continuity-auth\\.client\\.(?!.*-integration).*-test$"
+   :compiler-options {:warnings {:redef false}}}}}
