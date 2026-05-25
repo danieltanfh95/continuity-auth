@@ -66,47 +66,75 @@
   ^bytes [request]
   (:cauth/raw-body request))
 
+(def ^:private dummy-admin-secret
+  "Deterministic fallback secret used when the supplied key-id is
+  unknown. HMAC-SHA256 over any 32-byte key takes the same wall-clock
+  time, so computing against this dummy makes the unknown-key code path
+  indistinguishable from a valid-key-bad-sig path (codex M3 / claude 5
+  — admin timing oracle)."
+  (byte-array 32))
+
+(defn- safe-b64url-decode
+  "b64url-decode that returns a fixed-size zero byte-array on failure
+  instead of throwing. We use this only for inputs that feed into the
+  uniform-timing HMAC compare — the resulting `auth-failed?` flag is
+  what surfaces a bad input to the caller. We refuse to short-circuit
+  on a decode exception, because that would leak whether `nonce` or
+  `sig` was malformed via wall-clock."
+  ^bytes [s fallback-len]
+  (try (envelope/b64url-decode s)
+       (catch Exception _ (byte-array (long fallback-len)))))
+
 (defn- verify-admin!
   "Validate the admin-auth headers + signature against the request body.
-  Returns the resolved key-id on success; throws an errors/fail! exception
-  on failure."
+  Returns the resolved key-id on success; throws via `errors/fail!` on
+  failure.
+
+  All public failure paths return E_UNAUTHORIZED. Wall-clock timing is
+  uniform across:
+    - unknown key-id  → HMAC computed against a deterministic dummy
+    - bad timestamp   → HMAC still computed; bad-ts? folded into the
+                        final auth-failed? AND
+    - bad signature   → HMAC computed; constant-time-compare fails
+
+  The unknown-key oracle (codex M3 / claude 5) — measure latency for
+  `valid-key, bad-sig` vs `unknown-key, anything` — is closed."
   [{:keys [keystore tolerance-seconds nonce-ttl-seconds store ^java.util.Date now]} request]
   (when (empty? keystore)
     (errors/fail! :E_FORBIDDEN "admin endpoints disabled (no admin keystore loaded)"))
   (let [{:keys [key-id ts nonce sig]} (read-headers request)]
     (when-not (and key-id ts nonce sig)
       (errors/fail! :E_UNAUTHORIZED "missing admin auth headers"))
-    (let [secret (get keystore key-id)]
-      (when-not secret
-        (errors/fail! :E_UNAUTHORIZED "unknown admin key-id"))
-      ;; Timestamp window
-      (let [^java.util.Date parsed (try (java.util.Date/from (java.time.Instant/parse ts))
-                                        (catch Exception _ nil))]
-        (when-not parsed
-          (errors/fail! :E_UNAUTHORIZED "invalid admin ts"))
-        (when (> (Math/abs (- (.getTime now) (.getTime parsed)))
-                 (* 1000 (long tolerance-seconds)))
-          (errors/fail! :E_UNAUTHORIZED "admin ts outside clock-skew window")))
-      ;; Signature
-      (let [nonce-bytes (envelope/b64url-decode nonce)
-            sig-bytes   (envelope/b64url-decode sig)
-            body        (or (body-bytes-of request) (byte-array 0))
-            body-sha    (hash/sha256 body)
-            input       (hmac/signing-input
-                         {:method      (-> request :request-method name str/upper-case)
-                          :path        (or (:uri request) "")
-                          :body-sha256 body-sha
-                          :ts          ts
-                          :nonce       nonce-bytes})
-            expected    (hmac/hmac-sha256 secret input)]
-        (when-not (hash/constant-time-equal? expected sig-bytes)
-          (errors/fail! :E_UNAUTHORIZED "admin signature mismatch"))
-        ;; Replay defense — only AFTER signature verifies, so attackers
-        ;; can't pollute the nonce cache.
-        (let [result (nonce/check-and-record! store nonce-bytes nonce-ttl-seconds now)]
-          (when (= :replay result)
-            (errors/fail! :E_REPLAY "admin nonce replay")))
-        key-id))))
+    (let [real-secret    (get keystore key-id)
+          secret         (or real-secret dummy-admin-secret)
+          unknown-key?   (nil? real-secret)
+          ^java.util.Date parsed
+                         (try (java.util.Date/from (java.time.Instant/parse ts))
+                              (catch Exception _ nil))
+          bad-ts?        (or (nil? parsed)
+                             (> (Math/abs (- (.getTime now) (.getTime ^java.util.Date parsed)))
+                                (* 1000 (long tolerance-seconds))))
+          nonce-bytes    (safe-b64url-decode nonce 16)
+          sig-bytes      (safe-b64url-decode sig 32)
+          body           (or (body-bytes-of request) (byte-array 0))
+          body-sha       (hash/sha256 body)
+          input          (hmac/signing-input
+                          {:method      (-> request :request-method name str/upper-case)
+                           :path        (or (:uri request) "")
+                           :body-sha256 body-sha
+                           :ts          ts
+                           :nonce       nonce-bytes})
+          expected       (hmac/hmac-sha256 secret input)
+          sig-ok?        (hash/constant-time-equal? expected sig-bytes)
+          auth-failed?   (or unknown-key? bad-ts? (not sig-ok?))]
+      (when auth-failed?
+        (errors/fail! :E_UNAUTHORIZED "admin auth failed"))
+      ;; Replay defense — only AFTER auth verifies, so attackers can't
+      ;; pollute the nonce cache with arbitrary values.
+      (let [result (nonce/check-and-record! store nonce-bytes nonce-ttl-seconds now)]
+        (when (= :replay result)
+          (errors/fail! :E_REPLAY "admin nonce replay")))
+      key-id)))
 
 ;; -- handlers --------------------------------------------------------------
 

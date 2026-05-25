@@ -21,6 +21,7 @@
   writer model because the check-then-insert happens atomically inside
   the writer thread."
   (:require
+   [com.brunobonacci.mulog :as mu]
    [continuity-auth.server.crypto.hash :as hash]
    [continuity-auth.server.storage.protocol :as storage]))
 
@@ -71,7 +72,11 @@
   "Start a daemon thread that calls `sweep!` every `interval-seconds`.
   Returns a zero-arg `stop` function that interrupts the thread and
   waits for clean exit. Intended to be wired up by the system
-  composition; tests can call sweep! directly without this."
+  composition; tests can call sweep! directly without this.
+
+  Failures (any non-Interrupted Throwable) are logged via `mu/log` as
+  `:cauth/nonce-sweeper-failed` rather than silently swallowed (codex M8).
+  Without this, storage errors hide until the DB fills."
   [store interval-seconds]
   (let [running? (volatile! true)
         thread   (Thread.
@@ -84,10 +89,13 @@
                          (java.util.Date.))
                         (catch InterruptedException _
                           (vreset! running? false))
-                        (catch Throwable _
-                          ;; Best-effort: swallow per-iteration errors so
-                          ;; one bad sweep doesn't kill the cleaner.
-                          nil))
+                        (catch Throwable t
+                          ;; Best-effort: keep the cleaner alive across
+                          ;; per-iteration errors, BUT log the failure so
+                          ;; ops can see it (codex M8).
+                          (mu/log :cauth/nonce-sweeper-failed
+                                  :exception   (.getClass t)
+                                  :message     (ex-message t))))
                       (when @running?
                         (try
                           (Thread/sleep (* 1000 (long interval-seconds)))
