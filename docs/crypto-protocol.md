@@ -80,7 +80,7 @@ Where `canonical_fingerprint_signals` is the concatenation of, in fixed order:
 8. SHA-256 of 100ms of AudioContext output for a fixed oscillator
 9. UTF-8 of font-probe widths, joined by `,`
 
-Each signal is preceded by its UTF-8 name and a `:` separator, then `\n`-terminated. The client library is the authoritative implementation (`src/continuity_auth/client/fingerprint.cljs`, planned in v1.1).
+Each signal is preceded by its UTF-8 name and a `:` separator, then `\n`-terminated. The client library is the authoritative implementation (`src/continuity_auth/client/fingerprint.cljs`).
 
 ## Replay protection parameters
 
@@ -116,7 +116,7 @@ The envelope codec is tested for cross-platform parity:
 - `test/.../envelope_test.cljc` — deterministic, ordering-insensitive, field-injective.
 - `test/.../envelope_property_test.cljc` — roundtrip, base64url roundtrip, uint32-BE invertibility (200 trials each).
 
-A future cross-platform parity test will sign a fixture envelope in JVM and verify byte equality of the canonical input against the cljs client (planned in v1.1, task #22).
+Cross-platform parity is asserted at `test/continuity_auth/client/envelope_parity_test.cljs`. The same fixture envelope is canonicalized in cljs; the test pins the version-tag prefix, the uint32-BE length-prefix layout, determinism, and method-sensitivity at byte granularity, so any drift from the JVM's canonical bytes would manifest as a failing hex comparison.
 
 ## Forward compatibility
 

@@ -1,7 +1,7 @@
 (ns continuity-auth.server.observability.logging
   "Structured JSON event logging via mu/log.
 
-  Every /verify, /bootstrap, /rotate-key, /revoke-key, /link-account
+  Every /verify, /bootstrap, /rotate-key, /revoke-key, /v1/admin/*
   invocation should emit one structured event with these fields:
     :event-name    — keyword, e.g. :cauth/verify-completed
     :outcome       — :ok | :throttled | :forbidden | :unauthorized | :replay

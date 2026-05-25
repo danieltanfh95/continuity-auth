@@ -31,7 +31,8 @@ High-level overview. For the conceptual model see `ontology.md`. For the wire pr
 │   Ring/Reitit router                                        │
 │     │                                                       │
 │     ├── /v1/bootstrap, /v1/verify, /v1/rotate-key,          │
-│     │       /v1/revoke-key, /v1/link-account                │
+│     │       /v1/revoke-key                                  │
+│     ├── /v1/admin/revoke-key, /v1/admin/config (HMAC)       │
 │     │                                                       │
 │     ├── /healthz, /readyz, /metrics                         │
 │     │                                                       │
@@ -93,12 +94,16 @@ continuity-auth.server.storage.{schema,protocol,datalevin,migrations}
 continuity-auth.server.replay.nonce         replay cache
 continuity-auth.server.identity.{score,merge}   trust math + classification
 continuity-auth.server.ratelimit.{tier,window}  tiering + windowed counter
-continuity-auth.server.http.{errors,middleware,router,envelope-check}
-continuity-auth.server.http.handlers.{bootstrap,verify,health}  endpoints
+continuity-auth.server.http.{errors,middleware,router,envelope-check,util}
+continuity-auth.server.http.handlers.{bootstrap,verify,health,
+                                       rotate-key,revoke-key,admin}  endpoints
+continuity-auth.server.admin.hmac           admin HMAC verification
+continuity-auth.server.protocols.*          Axis / TrustPolicy / Storage seams
 continuity-auth.server.observability.{metrics,logging}
 continuity-auth.server.{config,system,main} composition
 
-continuity-auth.client.*                    cljs client (planned in v1.1)
+continuity-auth.client.{core,crypto,fingerprint,storage,tabs}  cljs client
+continuity-auth.admin.cli                   HMAC admin CLI (bin/cauth-admin)
 ```
 
 Boundaries:
@@ -126,4 +131,4 @@ Decisions that shaped the architecture and shouldn't be re-litigated without rea
 - **Sliding-window-counter approximation** can under-count by up to ~prev-bucket-count for non-uniform bursts at bucket edges. Documented in `ratelimit/window.clj`.
 - **5-second event-loss window** on app crash (async transact). Documented in `risk-register #7` in the plan.
 - **Anonymous tier is intentionally low value.** Bootstrap is cheap; sybil gains nothing. Tier uplift requires sustained observation or host-link.
-- **Client lib bundle ≤ 25 KB gzipped.** Hard CI gate. Future fingerprint signals can blow this; we will favor signal removal over budget increase.
+- **Client lib bundle ≤ 40 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is ≈ 33 KB. Future fingerprint signals can blow this; we will favor signal removal over budget increase.

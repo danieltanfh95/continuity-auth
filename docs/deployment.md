@@ -71,7 +71,7 @@ The runner reads the persisted `:schema/version` and applies pending migrations 
   - `fpl_cluster_merge_total{kind}` (counter)
   - `fpl_identity_total{tier}` (gauge)
 - **Logs**: mu/log structured JSON to stdout. Forward via the container runtime (Docker / Kubernetes) to your log sink.
-- **Tracing**: W3C `traceparent` propagated from inbound requests. If `FPL_OTEL_ENDPOINT` is set, traces export via OTLP.
+- **Tracing**: in v1.0 only the `X-Request-Id` correlation header is honoured (echoed back on every response). The OpenTelemetry SDK deps and `FPL_OTEL_ENDPOINT` config knob are loaded but no exporter is wired — see Open operator items below. Setting the env var without the exporter has no effect.
 
 ## Health and readiness
 

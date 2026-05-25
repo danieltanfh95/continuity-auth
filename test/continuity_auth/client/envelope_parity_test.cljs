@@ -6,8 +6,7 @@
   the cljs side produces different canonical bytes, the signatures
   would not verify on the server — these tests are the contract.
 
-  Hex of canonical bytes produced by JVM for the fixture envelope
-  (captured at the JVM test pass, 234 tests green):
+  Hex of canonical bytes produced by JVM for the fixture envelope:
     - method=POST, path=/v1/verify, ts=2026-05-24T12:34:56.789Z,
       host-user-id=alice, fixed body-sha/nonce/fp/key-id below.
   We compare hex on both platforms — the cljs result MUST match."

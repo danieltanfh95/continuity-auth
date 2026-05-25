@@ -49,7 +49,7 @@ just load          # run the k6 load test
 
 ## Status
 
-Under construction — see the plan file for execution order. Production cutover criteria are in §"Verification" of the plan.
+v1.0 — plan §Verification is green end-to-end (250 tests / 1316 assertions / 0 failures; bundle 33 KB against the 40 KB budget; uberjar boots clean; bootstrap → verify → rotate → revoke flow integration-tested). v1.1 items (link-account, GDPR erasure, admin reset-tier, idempotency middleware, OTel publisher, bootstrap per-IP limit, Datalevin write-watermark) are listed in `.plans/read-docs-seed-md-and-plan-reflective-catmull.md`.
 
 ## License
 

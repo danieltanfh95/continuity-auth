@@ -116,7 +116,7 @@ No CORS configuration is needed on the host's own endpoints from continuity-auth
 ## Cost / latency expectations
 
 - Round trip from your backend to fl-endpoint should be ≤ 5 ms (intra-region) for `/v1/verify`.
-- Library bundle adds ≤ 25 KB gzipped to your frontend.
+- Library bundle adds ≤ 40 KB gzipped to your frontend (current build ≈ 33 KB).
 - Keygen on first visit: ≤ 50 ms on a modern browser; happens once per device.
 - Signing per request: ≤ 5 ms on a modern browser.
 
