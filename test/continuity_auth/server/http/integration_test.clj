@@ -5,10 +5,12 @@
   per test. Exercises the full flow: bootstrap → verify (with a known
   Ed25519 keypair from RFC 8032)."
   (:require
+   [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
    [continuity-auth.envelope :as envelope]
    [continuity-auth.server.admin.hmac :as admin-hmac]
    [continuity-auth.server.http.router :as router]
+   [continuity-auth.server.observability.metrics :as metrics]
    [continuity-auth.server.storage.datalevin :as dtlv]
    [continuity-auth.server.storage.protocol :as storage]
    [jsonista.core :as json]
@@ -116,7 +118,7 @@
 
 (defn- with-running-system
   ([f] (with-running-system {} f))
-  ([{:keys [clock grace-seconds keystore config]
+  ([{:keys [clock grace-seconds keystore config registry bearer]
      :or {clock         (fn [] (Date.))
           grace-seconds 86400
           keystore      nil
@@ -132,6 +134,8 @@
                    :grace-seconds      grace-seconds
                    :keystore           keystore
                    :config             config
+                   :registry           registry
+                   :bearer             bearer
                    :windows            [{:window :1m :seconds 60}
                                          {:window :5m :seconds 300}
                                          {:window :1d :seconds 86400}]
@@ -561,3 +565,94 @@
           (is (= 18080 (-> r :body :server :port)))
           (is (= "<redacted>" (-> r :body :hmac :admin-keys-path)))
           (is (= "<redacted>" (-> r :body :observability :prometheus-bearer))))))))
+
+(deftest admin-config-strips-uri-userinfo
+  ;; Codex M4: a Datalevin URI like `dtlv://user:pw@host/db` must NOT leak
+  ;; the user:pw portion in the config dump. Both pathways:
+  ;;   - the `:uri` key is in `sensitive-config-keys` → wholesale redacted
+  ;;   - any string value matching `scheme://user:pw@host` gets its userinfo
+  ;;     stripped via the postwalk in `redact`
+  (let [secret (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+        ks     {"ops-test" secret}
+        cfg    {:datalevin {:uri "dtlv://admin:hunter2@db.internal:8891/fpl"}
+                ;; Stash the same string under an innocuous key — the
+                ;; URI-userinfo postwalk must catch it too.
+                :misc {:notes "see dtlv://ops:s3cret@db.internal/fpl for details"}}]
+    (with-running-system
+      {:keystore ks :config cfg}
+      (fn [{:keys [port]}]
+        (let [r (admin-http port "GET" "/v1/admin/config" nil
+                            {:key-id "ops-test" :secret secret})
+              body (:body r)]
+          (is (= 200 (:status r)))
+          ;; :datalevin/:uri is in sensitive-config-keys → fully redacted.
+          (is (= "<redacted>" (-> body :datalevin :uri)))
+          (let [notes (-> body :misc :notes)]
+            (is (string? notes))
+            (is (not (str/includes? notes "ops:s3cret"))
+                (str "userinfo must be stripped, got: " notes))
+            (is (str/includes? notes "<redacted>"))))))))
+
+;; -- /metrics auth ---------------------------------------------------------
+
+(deftest metrics-rejects-without-bearer
+  ;; Codex M1: a non-blank bearer is required. With a registry but blank
+  ;; bearer, every /metrics request returns 401.
+  (with-running-system
+    {:registry (metrics/make-registry)
+     :bearer   ""}
+    (fn [{:keys [port]}]
+      (let [r (http-get port "/metrics")]
+        (is (= 401 (:status r)))))))
+
+(deftest metrics-allows-with-bearer
+  (with-running-system
+    {:registry (metrics/make-registry)
+     :bearer   "scrape-token"}
+    (fn [{:keys [port]}]
+      (let [client (HttpClient/newHttpClient)
+            r (.. (HttpRequest/newBuilder)
+                  (uri (URI. (str "http://127.0.0.1:" port "/metrics")))
+                  (header "Authorization" "Bearer scrape-token")
+                  build)
+            resp (.send client r (HttpResponse$BodyHandlers/ofString))]
+        (is (= 200 (.statusCode resp)))))))
+
+(deftest verify-records-into-metrics-registry
+  ;; Regression for the wiring claim in the security review: running a
+  ;; bootstrap+verify must produce a non-zero `fpl_verify_total`. Before
+  ;; wiring this counter, /metrics shipped flat zeros and T14 ("ops would
+  ;; catch via metrics") was aspirational.
+  (let [registry (metrics/make-registry)]
+    (with-running-system
+      {:registry registry :bearer "tok"}
+      (fn [{:keys [port]}]
+        (let [kp (gen-ed25519)
+              fp (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+              {:keys [wire pubkey-b64]} (build-bootstrap-envelope
+                                          {:sk (:sk kp)
+                                           :pk-bytes (:pk-bytes kp)
+                                           :ts (iso8601-now)
+                                           :host-user-id ""
+                                           :fp-digest fp})
+              _    (http-post port "/v1/bootstrap"
+                              {:envelope wire :pubkey pubkey-b64 :alg "ed25519"})
+              v    (build-verify-envelope
+                    {:sk (:sk kp) :pk-bytes (:pk-bytes kp)
+                     :ts (iso8601-now) :host-user-id ""
+                     :fp-digest fp :method "POST" :path "/v1/verify"})
+              vres (http-post port "/v1/verify" {:envelope v})
+              _    (is (= 200 (:status vres)))
+              ;; Scrape /metrics and look for fpl_verify_total > 0.
+              client (HttpClient/newHttpClient)
+              mr (.. (HttpRequest/newBuilder)
+                     (uri (URI. (str "http://127.0.0.1:" port "/metrics")))
+                     (header "Authorization" "Bearer tok")
+                     build)
+              mresp (.send client mr (HttpResponse$BodyHandlers/ofString))
+              text  (.body mresp)]
+          (is (= 200 (.statusCode mresp)))
+          (is (str/includes? text "fpl_verify_total")
+              "registry should expose fpl_verify_total")
+          (is (re-find #"fpl_verify_total\{[^}]*outcome=\"ok\"[^}]*\}\s+1\.0" text)
+              (str "expected fpl_verify_total{outcome=ok,...} = 1.0; got:\n" text)))))))

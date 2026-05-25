@@ -26,9 +26,9 @@
   :sweeper-interval-seconds     30}
 
  :ratelimit
- {:windows  [{:size :1m   :seconds 60}
-             {:size :5m   :seconds 300}
-             {:size :1d   :seconds 86400}]
+ {:windows  [{:window :1m   :seconds 60}
+             {:window :5m   :seconds 300}
+             {:window :1d   :seconds 86400}]
   :tiers
   {:anonymous  {:1m 1   :5m 5    :1d 100}
    :tracked    {:1m 30  :5m 120  :1d 5000}

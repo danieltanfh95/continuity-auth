@@ -93,6 +93,13 @@
 
 (defmethod ig/init-key :cauth/metrics [_ {:keys [enabled? bearer]}]
   (when enabled?
+    (when (or (nil? bearer) (= "" bearer))
+      ;; Codex M1: /metrics defaults to 401 when bearer is blank. We
+      ;; refuse to ship an open metrics endpoint silently — operators
+      ;; either set FPL_PROM_BEARER or accept that /metrics is closed.
+      (binding [*out* *err*]
+        (println "WARN [:cauth/metrics] metrics enabled but FPL_PROM_BEARER is blank;")
+        (println "     /metrics will return 401 to every request until a bearer is set.")))
     {:registry (metrics/make-registry)
      :bearer   bearer}))
 
@@ -115,6 +122,24 @@
   ;; disabled" deployment.
   (admin-hmac/load-keystore path))
 
+(defn- normalize-rate-windows
+  "Validate the configured rate-limit windows.
+
+  Each window must have BOTH a `:window` keyword (used as the lookup key
+  in the per-tier limits map) and a `:seconds` long (the bucket size).
+  Throws ex-info with `:cauth/error :config/invalid` if any are missing —
+  fail-fast at startup, since the verify path would otherwise default
+  every limit to 0 and throttle every request."
+  [rate-windows]
+  (doseq [w rate-windows]
+    (when-not (keyword? (:window w))
+      (throw (ex-info "rate-limit window missing :window keyword"
+                      {:cauth/error :config/invalid :window w})))
+    (when-not (pos-int? (:seconds w))
+      (throw (ex-info "rate-limit window missing :seconds (positive int)"
+                      {:cauth/error :config/invalid :window w}))))
+  (mapv #(select-keys % [:window :seconds]) rate-windows))
+
 (defmethod ig/init-key :cauth/http-handler
   [_ {:keys [storage clock metrics replay rate-windows tier-limits
               scoring proxy limits grace admin-keystore config]}]
@@ -124,7 +149,7 @@
     :tolerance-seconds   (:timestamp-tolerance-seconds replay)
     :nonce-ttl-seconds   (:nonce-ttl-seconds replay)
     :grace-seconds       (:key-rotation-overlap-seconds grace)
-    :windows             (mapv #(select-keys % [:window :seconds]) rate-windows)
+    :windows             (normalize-rate-windows rate-windows)
     :scoring             scoring
     :tier-limits         tier-limits
     :registry            (:registry metrics)

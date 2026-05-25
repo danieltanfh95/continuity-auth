@@ -34,7 +34,23 @@
 
 (def ^:private sensitive-config-keys
   "Keys whose values must never appear in a config dump."
-  #{:prometheus-bearer :host-keys-path :admin-keys-path})
+  #{:prometheus-bearer :host-keys-path :admin-keys-path
+    :uri :password :secret :token :dburl})
+
+(def ^:private userinfo-uri-pattern
+  "Match the userinfo portion of a URI: `<scheme>://<userinfo>@<rest>`.
+  Used by `strip-uri-userinfo` to redact credentials inline in any
+  string value of the dumped config (e.g. `dtlv://user:pw@host/db`)."
+  #"([A-Za-z][A-Za-z0-9+.\-]*://)[^@/\s]*@")
+
+(defn- strip-uri-userinfo
+  "Return `s` with any `scheme://user:pw@` prefix rewritten to
+  `scheme://<redacted>@`. Strings that contain no userinfo are returned
+  unchanged. Non-string values pass through."
+  [v]
+  (if (string? v)
+    (str/replace v userinfo-uri-pattern "$1<redacted>@")
+    v))
 
 (defn- read-headers [request]
   (let [h (:headers request)]
@@ -133,19 +149,35 @@
                  :revoked_at (util/iso8601 now)}})))
 
 (defn- redact
-  "Walk `m`, replacing the value of every entry whose key is in
-  `sensitive-config-keys` with the string `\"<redacted>\"`. Handles
-  arbitrary nesting (maps inside vectors inside maps, etc.) via postwalk
-  — each map node is rewritten as its children are visited."
+  "Walk `m`, applying two layers of redaction:
+
+    1. Any entry whose key is in `sensitive-config-keys` has its value
+       replaced with `\"<redacted>\"`.
+    2. Any string value (in any position) that looks like a URI with
+       userinfo (`scheme://user:pw@host`) has its userinfo stripped
+       via `strip-uri-userinfo`.
+
+  The two-pass walk is necessary because a credential can leak either
+  via the key name (`:prometheus-bearer`) or inline in the value of a
+  more innocuous key (e.g. a Datalevin URI placed under `:uri` —
+  already in sensitive-keys, but defense-in-depth in case a future
+  config knob places it elsewhere)."
   [m]
   (walk/postwalk
    (fn [node]
-     (if (map? node)
+     (cond
+       (map? node)
        (reduce-kv (fn [acc k v]
-                    (assoc acc k (if (sensitive-config-keys k) "<redacted>" v)))
+                    (assoc acc k (if (sensitive-config-keys k)
+                                   "<redacted>"
+                                   (strip-uri-userinfo v))))
                   {}
                   node)
-       node))
+
+       (string? node)
+       (strip-uri-userinfo node)
+
+       :else node))
    m))
 
 (defn make-config-handler

@@ -26,6 +26,7 @@
    [continuity-auth.server.http.errors :as errors]
    [continuity-auth.server.http.util :as util]
    [continuity-auth.server.identity.merge :as merge]
+   [continuity-auth.server.observability.metrics :as metrics]
    [continuity-auth.server.storage.protocol :as storage]))
 
 (def ^:private route-path "/v1/bootstrap")
@@ -37,7 +38,7 @@
          :clock        (fn [] java.util.Date)
          :tolerance-seconds long
          :nonce-ttl-seconds long}"
-  [{:keys [store clock tolerance-seconds nonce-ttl-seconds]}]
+  [{:keys [store clock tolerance-seconds nonce-ttl-seconds registry]}]
   (fn [request]
     (let [{:keys [envelope pubkey-bytes alg]}
           (util/parse-pubkey-payload (:body-params request) {})
@@ -75,6 +76,7 @@
           identity-eid (:db/id (:pubkey/identity identity))
           identity-rec (storage/pull store snap2 identity-eid
                                       [:identity/id])]
+      (metrics/record-bootstrap! registry :ok)
       {:status  201
        :headers {"Content-Type" "application/json; charset=utf-8"}
        :body    {:ok            true

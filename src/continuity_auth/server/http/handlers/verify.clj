@@ -12,6 +12,7 @@
    [continuity-auth.server.http.errors :as errors]
    [continuity-auth.server.identity.merge :as merge]
    [continuity-auth.server.identity.score :as score]
+   [continuity-auth.server.observability.metrics :as metrics]
    [continuity-auth.server.ratelimit.tier :as tier]
    [continuity-auth.server.ratelimit.window :as window]
    [continuity-auth.server.storage.protocol :as storage]))
@@ -42,17 +43,19 @@
   "Build the /verify handler.
 
   deps: {:store, :clock, :tolerance-seconds, :nonce-ttl-seconds,
+         :registry — Prometheus registry (or nil if metrics disabled),
          :windows  — a coll of {:window kw :seconds long}
          :scoring  — score deltas map
          :tier-thresholds — tier projection thresholds (or nil for default)
          :tier-limits     — per-tier limits map (or nil for default)}"
-  [{:keys [store clock tolerance-seconds nonce-ttl-seconds
+  [{:keys [store clock tolerance-seconds nonce-ttl-seconds registry
             windows scoring tier-thresholds tier-limits]
     :or {scoring         score/default-deltas
          tier-thresholds tier/default-thresholds
          tier-limits     tier/default-limits}}]
   (fn [request]
-    (let [env (parse-envelope (:body-params request))
+    (let [start-ms (System/currentTimeMillis)
+          env (parse-envelope (:body-params request))
           now (clock)
           ;; Single read snapshot for the decision.
           snap (storage/snapshot store)
@@ -99,6 +102,8 @@
               ;; flattening penalties to one-per-burst. Latency cost is
               ;; <1 ms in practice; correctness wins.
               (storage/transact! store tx)
+              (metrics/record-verify! registry :ok tier-now
+                                       (- (System/currentTimeMillis) start-ms))
               {:status  200
                :headers {"Content-Type" "application/json; charset=utf-8"}
                :body    {:ok             true
@@ -116,4 +121,6 @@
                [{:request/identity identity-eid
                  :request/ts       now
                  :request/outcome  :throttled}])
+              (metrics/record-verify! registry :throttled tier-now
+                                       (- (System/currentTimeMillis) start-ms))
               (errors/error-response :E_RATE (:retry-after-ms window-decs)))))))))

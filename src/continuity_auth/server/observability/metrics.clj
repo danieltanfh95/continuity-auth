@@ -11,6 +11,7 @@
     - cluster merge outcomes
     - datalevin write latency"
   (:require
+   [continuity-auth.server.crypto.hash :as hash]
    [iapetos.core :as prom]
    [iapetos.export :as export]))
 
@@ -82,20 +83,34 @@
 
 ;; -- /metrics handler ------------------------------------------------------
 
+(defn- bearer-ok?
+  "Constant-time-compare the incoming Authorization header against the
+  configured bearer. Returns true iff the bearer is non-blank AND the
+  header exactly matches `Bearer <bearer>`."
+  [bearer auth-header]
+  (and (string? bearer) (not= "" bearer)
+       (string? auth-header)
+       (hash/constant-time-equal?
+        (.getBytes (str "Bearer " bearer) "UTF-8")
+        (.getBytes ^String auth-header     "UTF-8"))))
+
 (defn make-handler
   "Return a Ring handler that exposes the registry in Prometheus text
-  format. If `:bearer` is provided in deps, requests must carry the
-  matching `Authorization: Bearer <token>` header (intentionally cheap;
-  /metrics scraper provides the token)."
+  format.
+
+  Auth: a non-blank `:bearer` is REQUIRED. Requests must carry
+  `Authorization: Bearer <token>` matching exactly (constant-time
+  compare). If `bearer` is nil or blank, /metrics always returns 401 —
+  refusing to ship an open metrics endpoint by default (codex M1).
+  Operators who genuinely want /metrics open in a sandboxed network
+  should set `FPL_PROM_BEARER` and gate it at the upstream proxy."
   [{:keys [registry bearer]}]
   (fn [request]
     (cond
       (nil? registry)
       {:status 503 :body "metrics not initialized"}
 
-      (and (not (or (nil? bearer) (= "" bearer)))
-           (not= (str "Bearer " bearer)
-                 (get-in request [:headers "authorization"])))
+      (not (bearer-ok? bearer (get-in request [:headers "authorization"])))
       {:status 401 :body "unauthorized"}
 
       :else
