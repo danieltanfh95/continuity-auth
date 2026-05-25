@@ -123,9 +123,10 @@
   decision is returned with the maximum `retry-after-ms`. When all
   allow, increments are performed for each window.
 
-  `windows` is a seq of `{:window <keyword>, :seconds <long>, :limit <long>}`
-  triples (limits derived from tier projection)."
-  [store identity-eid windows ^java.util.Date now]
+  `windows` is a seq of `{:window <keyword>, :seconds <long>}`. `limits`
+  is a map of window-keyword to integer limit, typically produced by
+  `tier/limits-for`; a missing entry is treated as 0 (always throttle)."
+  [store identity-eid windows limits ^java.util.Date now]
   ;; Pre-pass: read-only check across all windows. We make this a
   ;; two-phase pass to avoid partial increments that wouldn't be
   ;; matched by a denial-of-service rollback. We DO leave a small
@@ -133,8 +134,9 @@
   ;; per the doc string of `check-and-increment!`.
   (let [snap (storage/snapshot store)
         read-pass
-        (mapv (fn [{:keys [window seconds limit] :as w}]
-                (let [current-start (align-to-window now seconds)
+        (mapv (fn [{:keys [window seconds] :as w}]
+                (let [limit         (get limits window 0)
+                      current-start (align-to-window now seconds)
                       prev-start    (java.util.Date. (- (now-ms current-start)
                                                         (* 1000 (long seconds))))
                       current       (find-bucket store snap identity-eid window current-start)
@@ -146,6 +148,7 @@
                       retry-ms (max 0 (- (* 1000 (long seconds))
                                          (long (Math/round (* 1000.0 e)))))]
                   (assoc w
+                         :limit limit
                          :approx-count a
                          :current current
                          :current-start current-start

@@ -23,7 +23,6 @@
    [clojure.string :as str]
    [continuity-auth.envelope :as envelope])
   (:import
-   (java.security MessageDigest)
    (javax.crypto Mac)
    (javax.crypto.spec SecretKeySpec)))
 
@@ -58,12 +57,3 @@
   (let [mac (Mac/getInstance "HmacSHA256")]
     (.init mac (SecretKeySpec. secret "HmacSHA256"))
     (.doFinal mac msg)))
-
-(defn sha256
-  ^bytes [^bytes msg]
-  (.digest (MessageDigest/getInstance "SHA-256") msg))
-
-(defn constant-time-equal?
-  "Constant-time comparison of two byte arrays."
-  [^bytes a ^bytes b]
-  (MessageDigest/isEqual a b))

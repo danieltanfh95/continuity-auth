@@ -46,14 +46,6 @@
 
 ;; -- pubkey resolution ----------------------------------------------------
 
-(defn- canonical-bytes-from-pubkey-record
-  [pubkey-record]
-  (:pubkey/bytes pubkey-record))
-
-(defn- alg-from-pubkey-record
-  [pubkey-record]
-  (:pubkey/alg pubkey-record))
-
 (defn resolve-existing-pubkey!
   "Look up the pubkey by :key-id in storage. Returns the record; throws
   if not found or if it has been revoked as of `now`.
@@ -102,10 +94,7 @@
   [{:keys [store snap envelope tolerance-seconds nonce-ttl-seconds now]}]
   (check-timestamp! envelope tolerance-seconds now)
   (let [record (resolve-existing-pubkey! store snap envelope now)]
-    (verify-signature!
-     envelope
-     (canonical-bytes-from-pubkey-record record)
-     (alg-from-pubkey-record record))
+    (verify-signature! envelope (:pubkey/bytes record) (:pubkey/alg record))
     ;; Nonce check happens AFTER signature verify so attackers cannot
     ;; pollute the nonce cache with arbitrary values just by sending
     ;; junk. (If they have a valid signature, they could pollute, but

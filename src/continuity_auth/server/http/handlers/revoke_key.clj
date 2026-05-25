@@ -22,13 +22,8 @@
    [continuity-auth.envelope :as envelope]
    [continuity-auth.server.http.envelope-check :as ec]
    [continuity-auth.server.http.errors :as errors]
+   [continuity-auth.server.http.util :as util]
    [continuity-auth.server.storage.protocol :as storage]))
-
-(defn- iso8601
-  ^String [^java.util.Date d]
-  (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")]
-    (.setTimeZone fmt (java.util.TimeZone/getTimeZone "UTC"))
-    (.format fmt d)))
 
 (defn- read-payload
   [body-params]
@@ -58,16 +53,13 @@
                  :tolerance-seconds  tolerance-seconds
                  :nonce-ttl-seconds  nonce-ttl-seconds
                  :now                now})
-          identity-eid (or (:db/id (:pubkey/identity rec))
-                           (:pubkey/identity rec))
-          tx [{:db/id             (:db/id rec)
-               :pubkey/revoked-at now}
-              {:trust-event/identity identity-eid
-               :trust-event/ts       now
-               :trust-event/delta    0.0
-               :trust-event/reason   :revoke-key}]]
+          identity-eid (util/identity-eid-of rec)
+          tx (util/revoke-tx {:pubkey-eid   (:db/id rec)
+                              :identity-eid identity-eid
+                              :revoked-at   now
+                              :reason       :revoke-key})]
       (storage/transact! store tx)
       {:status  200
        :headers {"Content-Type" "application/json; charset=utf-8"}
        :body    {:ok         true
-                 :revoked_at (iso8601 now)}})))
+                 :revoked_at (util/iso8601 now)}})))

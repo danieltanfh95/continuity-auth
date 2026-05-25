@@ -23,17 +23,18 @@
   open to anonymous admin calls."
   (:require
    [clojure.string :as str]
+   [clojure.walk :as walk]
    [continuity-auth.envelope :as envelope]
    [continuity-auth.server.admin.hmac :as hmac]
+   [continuity-auth.server.crypto.hash :as hash]
    [continuity-auth.server.http.errors :as errors]
+   [continuity-auth.server.http.util :as util]
    [continuity-auth.server.replay.nonce :as nonce]
    [continuity-auth.server.storage.protocol :as storage]))
 
-(defn- iso8601
-  ^String [^java.util.Date d]
-  (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")]
-    (.setTimeZone fmt (java.util.TimeZone/getTimeZone "UTC"))
-    (.format fmt d)))
+(def ^:private sensitive-config-keys
+  "Keys whose values must never appear in a config dump."
+  #{:prometheus-bearer :host-keys-path :admin-keys-path})
 
 (defn- read-headers [request]
   (let [h (:headers request)]
@@ -74,7 +75,7 @@
       (let [nonce-bytes (envelope/b64url-decode nonce)
             sig-bytes   (envelope/b64url-decode sig)
             body        (or (body-bytes-of request) (byte-array 0))
-            body-sha    (hmac/sha256 body)
+            body-sha    (hash/sha256 body)
             input       (hmac/signing-input
                          {:method      (-> request :request-method name str/upper-case)
                           :path        (or (:uri request) "")
@@ -82,7 +83,7 @@
                           :ts          ts
                           :nonce       nonce-bytes})
             expected    (hmac/hmac-sha256 secret input)]
-        (when-not (hmac/constant-time-equal? expected sig-bytes)
+        (when-not (hash/constant-time-equal? expected sig-bytes)
           (errors/fail! :E_UNAUTHORIZED "admin signature mismatch"))
         ;; Replay defense — only AFTER signature verifies, so attackers
         ;; can't pollute the nonce cache.
@@ -119,36 +120,33 @@
           rec  (storage/find-pubkey-by-thumbprint store snap thumb)
           _    (when-not rec
                  (errors/fail! :E_NOT_FOUND "unknown key-id"))
-          identity-eid (or (:db/id (:pubkey/identity rec))
-                           (:pubkey/identity rec))
-          tx [{:db/id             (:db/id rec)
-               :pubkey/revoked-at now}
-              {:trust-event/identity identity-eid
-               :trust-event/ts       now
-               :trust-event/delta    0.0
-               :trust-event/reason   :admin-revoke}]]
+          identity-eid (util/identity-eid-of rec)
+          tx (util/revoke-tx {:pubkey-eid   (:db/id rec)
+                              :identity-eid identity-eid
+                              :revoked-at   now
+                              :reason       :admin-revoke})]
       (storage/transact! store tx)
       {:status  200
        :headers {"Content-Type" "application/json; charset=utf-8"
                  "X-Admin-Authenticated-As" admin-id}
        :body    {:ok         true
-                 :revoked_at (iso8601 now)}})))
+                 :revoked_at (util/iso8601 now)}})))
 
 (defn- redact
-  "Walk `m`, replacing values of sensitive keys with the string \"<redacted>\"
-  so config-dump never leaks secrets. Recursive."
+  "Walk `m`, replacing the value of every entry whose key is in
+  `sensitive-config-keys` with the string `\"<redacted>\"`. Handles
+  arbitrary nesting (maps inside vectors inside maps, etc.) via postwalk
+  — each map node is rewritten as its children are visited."
   [m]
-  (let [sensitive? #{:prometheus-bearer :host-keys-path :admin-keys-path}]
-    (cond
-      (map? m)
-      (into {} (map (fn [[k v]]
-                      [k (cond
-                           (sensitive? k) "<redacted>"
-                           (map? v)       (redact v)
-                           (sequential? v) (mapv #(if (map? %) (redact %) %) v)
-                           :else          v)]))
-            m)
-      :else m)))
+  (walk/postwalk
+   (fn [node]
+     (if (map? node)
+       (reduce-kv (fn [acc k v]
+                    (assoc acc k (if (sensitive-config-keys k) "<redacted>" v)))
+                  {}
+                  node)
+       node))
+   m))
 
 (defn make-config-handler
   "GET /v1/admin/config. Returns the effective resolved config (after

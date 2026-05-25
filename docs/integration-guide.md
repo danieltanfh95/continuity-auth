@@ -36,9 +36,9 @@ The contract:
            :host-id  "my-app"})
 
 ;; Outgoing request:
-(-> (fpl/sign-fetch! {:method "POST"
-                       :path   "/api/foo"
-                       :body   "..."})
+(-> (fpl/sign-fetch {:method "POST"
+                      :path   "/api/foo"
+                      :body   "..."})
     js/fetch)
 ```
 

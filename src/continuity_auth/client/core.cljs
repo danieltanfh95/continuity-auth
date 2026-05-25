@@ -6,7 +6,7 @@
       init        — initialize: load or generate the keypair, ensure
                     metadata, attach cross-tab listeners
       verify      — sign a request envelope and POST to /v1/verify
-      sign-fetch! — produce a signed envelope to attach to an outgoing
+      sign-fetch — produce a signed envelope to attach to an outgoing
                     fetch; the caller dispatches the fetch
       rotate-key! — generate a new keypair, sign rotation envelope with
                     the old key, persist the new
@@ -209,7 +209,7 @@
   (when-not (:initialized? @state)
     (throw (ex-info "fpl/init has not been called" {}))))
 
-(defn sign-fetch!
+(defn sign-fetch
   "Sign a request envelope. Returns a promise resolving to the wire
   envelope (a JSON-safe map). The caller decides whether to POST it to
   continuity-auth or attach it to an outgoing fetch the host backend
@@ -239,11 +239,11 @@
 
   This is a convenience for the case where the browser communicates
   directly with continuity-auth; the typical production path is
-  `sign-fetch!` + host-backend forwarding."
+  `sign-fetch` + host-backend forwarding."
   [req]
   (ensure-initialized!)
   (let [{:keys [endpoint]} @state]
-    (p/let [{:keys [envelope]} (sign-fetch! req)
+    (p/let [{:keys [envelope]} (sign-fetch req)
             ;; Heuristic: if we just generated the key in this session
             ;; AND the server has never seen it, /verify will return
             ;; E_UNAUTHORIZED. The cleanest path is to call /v1/bootstrap
@@ -259,7 +259,7 @@
   []
   (ensure-initialized!)
   (let [{:keys [endpoint pubkey-bytes alg]} @state]
-    (p/let [{:keys [envelope]} (sign-fetch! {:method "POST"
+    (p/let [{:keys [envelope]} (sign-fetch {:method "POST"
                                               :path   "/v1/bootstrap"
                                               :body   ""})
             resp (http-post endpoint "/v1/bootstrap"

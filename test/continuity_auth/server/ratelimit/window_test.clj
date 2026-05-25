@@ -101,17 +101,11 @@
         (let [eid (new-identity! store)
               now (Date.)
               ;; Fill the 5m bucket to capacity.
+              windows [{:window :1m :seconds 60} {:window :5m :seconds 300}]
+              limits  {:1m 30 :5m 3}
               _   (dotimes [_ 3]
-                    (window/check-many
-                     store eid
-                     [{:window :1m :seconds 60  :limit 30}
-                      {:window :5m :seconds 300 :limit 3}]
-                     now))
-              r   (window/check-many
-                   store eid
-                   [{:window :1m :seconds 60  :limit 30}
-                    {:window :5m :seconds 300 :limit 3}]
-                   now)]
+                    (window/check-many store eid windows limits now))
+              r   (window/check-many store eid windows limits now)]
           (is (false? (:allowed? r)))
           (is (= 3 (:limit r))))))))
 

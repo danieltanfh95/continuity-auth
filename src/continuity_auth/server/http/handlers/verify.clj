@@ -89,14 +89,7 @@
                              :ever-tracked? (boolean (:identity/ever-tracked? identity))}
                             tier-thresholds)
               limits       (tier/limits-for tier-now tier-limits)
-              window-decs  (window/check-many
-                            store identity-eid
-                            (mapv (fn [{:keys [window seconds]}]
-                                    {:window  window
-                                     :seconds seconds
-                                     :limit   (get limits window 0)})
-                                  windows)
-                            now)]
+              window-decs  (window/check-many store identity-eid windows limits now)]
           (if (:allowed? window-decs)
             (let [tx (merge/classification-tx
                       classification incoming score-before scoring now)]

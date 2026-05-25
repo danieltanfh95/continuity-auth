@@ -22,11 +22,12 @@
    [clojure.tools.cli :as cli]
    [continuity-auth.envelope :as envelope]
    [continuity-auth.server.admin.hmac :as hmac]
+   [continuity-auth.server.crypto.hash :as hash]
    [jsonista.core :as json])
   (:import
    (java.net URI)
-   (java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers
-                  HttpResponse$BodyHandlers)
+   (java.net.http HttpClient HttpRequest HttpRequest$Builder
+                  HttpRequest$BodyPublishers HttpResponse$BodyHandlers)
    (java.security SecureRandom)))
 
 (def ^:private json-mapper
@@ -68,7 +69,7 @@
   [{:keys [method path body key-id secret]}]
   (let [ts       (iso8601-now)
         nonce    (random-nonce)
-        body-sha (hmac/sha256 (or body (byte-array 0)))
+        body-sha (hash/sha256 (or body (byte-array 0)))
         input    (hmac/signing-input
                   {:method      method
                    :path        path
@@ -81,23 +82,37 @@
                "X-Admin-Nonce"  (envelope/b64url-encode nonce)
                "X-Admin-Sig"    (envelope/b64url-encode sig)}}))
 
+(defn- apply-headers
+  "Apply each {name → value} pair to the HttpRequest builder. Returns
+  the builder so it can be threaded."
+  ^HttpRequest$Builder [^HttpRequest$Builder builder headers]
+  (reduce-kv (fn [^HttpRequest$Builder b k v] (.header b k v))
+             builder
+             headers))
+
+(defn- apply-method
+  "Bind the HTTP method and (for POST) body+content-type onto the
+  builder. Returns the builder."
+  ^HttpRequest$Builder [^HttpRequest$Builder builder method ^bytes body]
+  (case method
+    "GET"  (.GET builder)
+    "POST" (-> builder
+               (.header "Content-Type" "application/json")
+               (.POST (HttpRequest$BodyPublishers/ofByteArray
+                       (or body (byte-array 0)))))))
+
 (defn- send-request
   "Issue the HTTP request and return {:status, :body (parsed JSON or string)}."
   [{:keys [server method path body headers]}]
-  (let [client (HttpClient/newHttpClient)
-        builder (.. (HttpRequest/newBuilder)
-                    (uri (URI. (str server path))))
-        _      (doseq [[k v] headers]
-                 (.header builder k v))
-        _      (case method
-                 "GET"  (.GET builder)
-                 "POST" (do (.header builder "Content-Type" "application/json")
-                            (.POST builder
-                                   (HttpRequest$BodyPublishers/ofByteArray
-                                    (or body (byte-array 0))))))
-        req    (.build builder)
-        resp   (.send client req (HttpResponse$BodyHandlers/ofString))
-        text   (.body resp)]
+  (let [req  (-> (HttpRequest/newBuilder)
+                 (.uri (URI. (str server path)))
+                 (apply-headers headers)
+                 (apply-method method body)
+                 (.build))
+        resp (.send (HttpClient/newHttpClient)
+                    req
+                    (HttpResponse$BodyHandlers/ofString))
+        text (.body resp)]
     {:status (.statusCode resp)
      :body   (try (json/read-value text json-mapper)
                   (catch Exception _ text))}))

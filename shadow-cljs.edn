@@ -23,7 +23,7 @@
    :modules         {:core {:exports {init             continuity-auth.client.core/init
                                        verify           continuity-auth.client.core/verify
                                        bootstrap        continuity-auth.client.core/bootstrap!
-                                       signFetch        continuity-auth.client.core/sign-fetch!
+                                       signFetch        continuity-auth.client.core/sign-fetch
                                        clear            continuity-auth.client.core/clear!
                                        setHostUserId    continuity-auth.client.core/set-host-user-id!}}}
    :compiler-options {:infer-externs    :auto

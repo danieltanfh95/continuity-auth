@@ -35,6 +35,24 @@
     snap
     (d/db snap)))
 
+(def ^:private tuple-pull-attrs
+  [:db/id :tuple/id :tuple/identity :tuple/ip
+   :tuple/fp-digest :tuple/ls-pubkey
+   :tuple/first-seen :tuple/last-seen
+   :tuple/observation-count])
+
+(defn- find-tuples-by-attr
+  "Query for all tuples whose `attr` equals `value`, then pull the
+  standard `tuple-pull-attrs` shape for each. Used by the three
+  `find-tuples-by-{ip,fp,ls-pubkey}` protocol methods, which differ
+  only in the indexed attribute."
+  [db attr value]
+  (let [eids (d/q [:find '[?e ...]
+                   :in '$ '?v
+                   :where ['?e attr '?v]]
+                  db value)]
+    (mapv #(d/pull db tuple-pull-attrs %) eids)))
+
 (defrecord DatalevinStorage [conn]
   protocol/Storage
 
@@ -67,43 +85,13 @@
                 eid))))
 
   (find-tuples-by-ip [_ snap ip]
-    (let [db   (to-db snap)
-          eids (d/q '[:find [?e ...]
-                      :in $ ?ip
-                      :where [?e :tuple/ip ?ip]]
-                    db ip)]
-      (mapv #(d/pull db
-                     [:db/id :tuple/id :tuple/identity :tuple/ip
-                      :tuple/fp-digest :tuple/ls-pubkey
-                      :tuple/first-seen :tuple/last-seen
-                      :tuple/observation-count] %)
-            eids)))
+    (find-tuples-by-attr (to-db snap) :tuple/ip ip))
 
   (find-tuples-by-fp [_ snap fp-bytes]
-    (let [db   (to-db snap)
-          eids (d/q '[:find [?e ...]
-                      :in $ ?fp
-                      :where [?e :tuple/fp-digest ?fp]]
-                    db fp-bytes)]
-      (mapv #(d/pull db
-                     [:db/id :tuple/id :tuple/identity :tuple/ip
-                      :tuple/fp-digest :tuple/ls-pubkey
-                      :tuple/first-seen :tuple/last-seen
-                      :tuple/observation-count] %)
-            eids)))
+    (find-tuples-by-attr (to-db snap) :tuple/fp-digest fp-bytes))
 
   (find-tuples-by-ls-pubkey [_ snap pubkey-eid]
-    (let [db   (to-db snap)
-          eids (d/q '[:find [?e ...]
-                      :in $ ?p
-                      :where [?e :tuple/ls-pubkey ?p]]
-                    db pubkey-eid)]
-      (mapv #(d/pull db
-                     [:db/id :tuple/id :tuple/identity :tuple/ip
-                      :tuple/fp-digest :tuple/ls-pubkey
-                      :tuple/first-seen :tuple/last-seen
-                      :tuple/observation-count] %)
-            eids)))
+    (find-tuples-by-attr (to-db snap) :tuple/ls-pubkey pubkey-eid))
 
   (find-buckets [_ snap identity-eid window]
     (let [db   (to-db snap)

@@ -16,14 +16,14 @@ The trust vector is a tuple `(ip, browser_fingerprint, ls_pubkey)`, optionally e
 
 The merge rule: **any axis match** identifies the same user. **Any axis mismatch** within an established cluster lowers the trust score. The only cryptographically anchored merge signal is the LS pubkey — IP and fingerprint matches are advisory only, so an attacker cannot poison a cluster they have no key for.
 
-See [`.plans/read-docs-seed-md-and-plan-reflective-catmull.md`](.plans/read-docs-seed-md-and-plan-reflective-catmull.md) for the full plan, [`docs/seed.md`](docs/seed.md) for the original spec, and [`docs/threat-model.md`](docs/threat-model.md) (once written) for the security analysis.
+See [`.plans/read-docs-seed-md-and-plan-reflective-catmull.md`](.plans/read-docs-seed-md-and-plan-reflective-catmull.md) for the full plan, [`docs/seed.md`](docs/seed.md) for the original spec, [`docs/threat-model.md`](docs/threat-model.md) for the security analysis, and [`docs/style/`](docs/style/) for the Clojure / correctness-framing conventions used in this repo.
 
 ## Stack
 
 - Server: Clojure 1.12 on JDK 21, Ring/Reitit, Jetty 11, Malli, Integrant.
 - Storage: Datalevin (LMDB, server mode in prod).
 - Crypto: BouncyCastle for Ed25519 on JVM; Web Crypto SubtleCrypto in the browser.
-- Frontend: ClojureScript via shadow-cljs, target ≤ 25 KB gzipped.
+- Frontend: ClojureScript via shadow-cljs, target ≤ 40 KB gzipped.
 
 ## Layout
 

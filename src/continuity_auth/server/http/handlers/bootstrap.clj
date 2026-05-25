@@ -18,32 +18,10 @@
     - Atomically record the nonce (replay defense).
     - Create identity + pubkey + first tuple (one transaction)."
   (:require
-   [continuity-auth.crypto :as crypto]
-   [continuity-auth.envelope :as envelope]
    [continuity-auth.server.http.envelope-check :as ec]
-   [continuity-auth.server.http.errors :as errors]
+   [continuity-auth.server.http.util :as util]
    [continuity-auth.server.identity.merge :as merge]
    [continuity-auth.server.storage.protocol :as storage]))
-
-(defn- read-bootstrap-payload
-  "Parse the request body into structured form. Throws E_BAD_REQUEST on
-  malformed input."
-  [body-params]
-  (let [{:keys [envelope pubkey alg]} body-params]
-    (when-not (and envelope pubkey alg)
-      (errors/fail! :E_BAD_REQUEST "missing envelope / pubkey / alg"))
-    (let [alg-kw (keyword alg)]
-      (when-not (crypto/algorithm? alg-kw)
-        (errors/fail! :E_BAD_REQUEST "unknown alg"))
-      (let [env (try (envelope/wire->envelope envelope)
-                     (catch Exception _
-                       (errors/fail! :E_BAD_REQUEST "malformed envelope")))
-            pkb (try (envelope/b64url-decode pubkey)
-                     (catch Exception _
-                       (errors/fail! :E_BAD_REQUEST "malformed pubkey")))]
-        (when-not (= (count pkb) (get crypto/pubkey-byte-length alg-kw))
-          (errors/fail! :E_BAD_REQUEST "pubkey wrong length for alg"))
-        {:envelope env :pubkey-bytes pkb :alg alg-kw}))))
 
 (defn make-handler
   "Build the bootstrap handler with injected deps.
@@ -55,7 +33,7 @@
   [{:keys [store clock tolerance-seconds nonce-ttl-seconds]}]
   (fn [request]
     (let [{:keys [envelope pubkey-bytes alg]}
-          (read-bootstrap-payload (:body-params request))
+          (util/parse-pubkey-payload (:body-params request) {})
           now (clock)
           ;; Verify cryptography + record nonce.
           pubkey (ec/verify-bootstrap-envelope!

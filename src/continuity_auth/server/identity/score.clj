@@ -7,9 +7,7 @@
   only produces deltas for discrete events.
 
   Defaults match the table in `.plans/...md §D` and the ontology §6.
-  They are configurable at startup via the :scoring map in config.edn."
-  (:require
-   [clojure.set :as set]))
+  They are configurable at startup via the :scoring map in config.edn.")
 
 (def default-deltas
   "Default magnitudes for each kind of trust event. Negative magnitudes
@@ -127,7 +125,3 @@
           best (first scored)]
       {:closest       (:tuple best)
        :mismatch-axes (:mismatch-axes best)})))
-
-;; Unused-but-referenced symbol re-export to silence consumer-static-analysis
-;; without changing the namespace surface (no production effect).
-(comment (set/union #{} #{}))
