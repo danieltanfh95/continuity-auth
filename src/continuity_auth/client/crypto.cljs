@@ -27,22 +27,15 @@
       (throw (ex-info "SubtleCrypto unavailable" {}))))
 
 (def alg->params
-  {:ed25519 {:web-name "Ed25519"
-             :usages   #js ["sign" "verify"]}
-   :p256    {:web-name "ECDSA"
-             :curve    "P-256"
-             :hash     "SHA-256"
-             :usages   #js ["sign" "verify"]}})
-
-(defn- ->key-spec [alg]
-  (case alg
-    :ed25519 #js {:name "Ed25519"}
-    :p256    #js {:name "ECDSA" :namedCurve "P-256"}))
-
-(defn- ->sign-params [alg]
-  (case alg
-    :ed25519 #js {:name "Ed25519"}
-    :p256    #js {:name "ECDSA" :hash #js {:name "SHA-256"}}))
+  "All per-algorithm SubtleCrypto knobs in one place. Adding a new alg is
+  one row; the call sites read from this table via `get-in` and need no
+  changes."
+  {:ed25519 {:key-spec    #js {:name "Ed25519"}
+             :sign-params #js {:name "Ed25519"}
+             :usages      #js ["sign" "verify"]}
+   :p256    {:key-spec    #js {:name "ECDSA" :namedCurve "P-256"}
+             :sign-params #js {:name "ECDSA" :hash #js {:name "SHA-256"}}
+             :usages      #js ["sign" "verify"]}})
 
 ;; -- key generation --------------------------------------------------------
 
@@ -56,7 +49,7 @@
   (when-not (crypto/algorithm? alg)
     (throw (ex-info "unknown algorithm" {:alg alg})))
   (p/let [kp (.generateKey (subtle)
-                            (->key-spec alg)
+                            (get-in alg->params [alg :key-spec])
                             false                        ; extractable=false
                             (get-in alg->params [alg :usages]))]
     {:private-key (.-privateKey kp)
@@ -81,7 +74,7 @@
   the algorithm `alg`. Returns a promise resolving to a 64-byte
   Uint8Array (raw R||S, NOT DER)."
   [alg private-key bytes]
-  (p/let [buf (.sign (subtle) (->sign-params alg) private-key bytes)]
+  (p/let [buf (.sign (subtle) (get-in alg->params [alg :sign-params]) private-key bytes)]
     (js/Uint8Array. buf)))
 
 ;; -- digest ----------------------------------------------------------------

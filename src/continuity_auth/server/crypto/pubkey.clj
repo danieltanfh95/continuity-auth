@@ -50,6 +50,12 @@
       (throw (ex-info "P-256 pubkey must be SEC1 uncompressed (0x04 prefix)"
                       {:got (format "0x%02x" b0)})))))
 
+(def ^:private alg->extra-canonical-check
+  "Per-algorithm extra structural check that must hold for canonical
+  bytes beyond the length check. Adding a new algorithm with extra
+  validation is one map entry; absent entries mean length-only."
+  {:p256 check-p256-prefix!})
+
 ;; -- canonical → BouncyCastle params --------------------------------------
 
 (defn ed25519-params-from-canonical
@@ -91,5 +97,6 @@
   "Convenience: validate length, then return the thumbprint."
   ^bytes [alg ^bytes canonical-bs]
   (check-canonical-length! alg canonical-bs)
-  (when (= alg :p256) (check-p256-prefix! canonical-bs))
+  (when-let [extra-check (get alg->extra-canonical-check alg)]
+    (extra-check canonical-bs))
   (thumbprint canonical-bs))
