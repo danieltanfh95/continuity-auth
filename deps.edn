@@ -102,4 +102,8 @@
 
   ;; Migration runner — one-shot
   :migrate
-  {:main-opts ["-m" "continuity-auth.server.storage.migrations.runner"]}}}
+  {:main-opts ["-m" "continuity-auth.server.storage.migrations.runner"]}
+
+  ;; Admin CLI — talks to a running server via HMAC over /v1/admin/*
+  :admin
+  {:main-opts ["-m" "continuity-auth.admin.cli"]}}}

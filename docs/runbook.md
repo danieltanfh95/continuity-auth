@@ -79,6 +79,20 @@ clojure -M:dev
 
 ### Revoking a pubkey (security incident)
 
+**Preferred — admin CLI** (no DB downtime, audited via `:admin-revoke` trust event):
+
+```bash
+bin/cauth-admin \
+  --server https://fl.example.com \
+  --key-id ops-01 \
+  --secret-file /etc/fpl/admin-ops-01.secret \
+  revoke-key <b64url-thumbprint>
+```
+
+The CLI signs with HMAC-SHA256; the server validates against the keystore at `FPL_ADMIN_HMAC_KEYS_PATH` (a `{:keys [{:id, :secret-b64}]}` EDN file loaded at startup). On success the pubkey's `:pubkey/revoked-at` is set to `now` and subsequent `/verify` returns `E_FORBIDDEN`.
+
+**Fallback — direct DB** (when the server is down or the keystore is lost):
+
 ```bash
 clojure -M:dev
 (require '[continuity-auth.server.storage.datalevin :as dtlv]
@@ -88,7 +102,25 @@ clojure -M:dev
                      :pubkey/revoked-at (java.util.Date.)}])
 ```
 
-Subsequent `/verify` attempts with this pubkey return `E_FORBIDDEN`.
+### Inspecting effective configuration
+
+```bash
+bin/cauth-admin --server https://fl.example.com --key-id ops-01 \
+  --secret-file /etc/fpl/admin-ops-01.secret config | jq
+```
+
+This dumps the aero-resolved config (env vars applied). Sensitive fields (`:prometheus-bearer`, `:host-keys-path`, `:admin-keys-path`) come back as `"<redacted>"`. Use this to verify what the server *actually* loaded — useful when a redeploy did or didn't pick up a change you expected.
+
+### Changing configuration
+
+**continuity-auth has no live-config-mutation surface, by design.** Dynamic config is a footgun: it races with in-flight requests, defeats infrastructure-as-code audit, and produces deploys that don't match git. The canonical path is:
+
+1. Update `resources/config.edn` (or the env var override) in the source repo.
+2. Open a PR; review; merge.
+3. Redeploy. The new pod loads the new config on startup.
+4. Verify with `bin/cauth-admin … config`.
+
+The only attributes that change at runtime are stored in the database (trust scores, pubkey revocations, identity tiers) and are mutated via the API.
 
 ### Erasing an identity (GDPR)
 

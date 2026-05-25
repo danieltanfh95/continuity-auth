@@ -7,6 +7,7 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [continuity-auth.envelope :as envelope]
+   [continuity-auth.server.admin.hmac :as admin-hmac]
    [continuity-auth.server.http.router :as router]
    [continuity-auth.server.storage.datalevin :as dtlv]
    [continuity-auth.server.storage.protocol :as storage]
@@ -55,10 +56,12 @@
 (defn- sha256 ^bytes [^bytes bs]
   (.digest (MessageDigest/getInstance "SHA-256") bs))
 
-(defn- iso8601-now []
+(defn- iso8601 [^Date d]
   (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
         _   (.setTimeZone fmt (java.util.TimeZone/getTimeZone "UTC"))]
-    (.format fmt (Date.))))
+    (.format fmt d)))
+
+(defn- iso8601-now [] (iso8601 (Date.)))
 
 (defn- build-bootstrap-envelope
   "Build a complete bootstrap envelope (with signature) for the given
@@ -105,32 +108,41 @@
 
 ;; -- HTTP harness ----------------------------------------------------------
 
-(defn- with-running-system [f]
-  (let [dir   (temp-dir)
-        store (dtlv/open (.toString dir))
-        clock (fn [] (Date.))
-        handler (router/make-handler
-                 {:store              store
-                  :clock              clock
-                  :tolerance-seconds  60
-                  :nonce-ttl-seconds  120
-                  :windows            [{:window :1m :seconds 60}
-                                        {:window :5m :seconds 300}
-                                        {:window :1d :seconds 86400}]
-                  :tier-limits        {:anonymous {:1m 5  :5m 50  :1d 1000}
-                                        :tracked   {:1m 30 :5m 120 :1d 5000}
-                                        :penalized {:1m 0  :5m 1   :1d 20}
-                                        :banned    {:1m 0  :5m 0   :1d 1}}}
-                 {:trusted-cidrs []
-                  :ip-header     "x-forwarded-for"})
-        server (jetty/run-jetty handler {:port 0 :join? false})]
-    (try
-      (f {:store store
-          :port  (-> server (.getConnectors) first (.getLocalPort))})
-      (finally
-        (.stop server)
-        (storage/close store)
-        (delete-recursively dir)))))
+(defn- with-running-system
+  ([f] (with-running-system {} f))
+  ([{:keys [clock grace-seconds keystore config]
+     :or {clock         (fn [] (Date.))
+          grace-seconds 86400
+          keystore      nil
+          config        {}}}
+    f]
+   (let [dir   (temp-dir)
+         store (dtlv/open (.toString dir))
+         handler (router/make-handler
+                  {:store              store
+                   :clock              clock
+                   :tolerance-seconds  60
+                   :nonce-ttl-seconds  120
+                   :grace-seconds      grace-seconds
+                   :keystore           keystore
+                   :config             config
+                   :windows            [{:window :1m :seconds 60}
+                                         {:window :5m :seconds 300}
+                                         {:window :1d :seconds 86400}]
+                   :tier-limits        {:anonymous {:1m 5  :5m 50  :1d 1000}
+                                         :tracked   {:1m 30 :5m 120 :1d 5000}
+                                         :penalized {:1m 0  :5m 1   :1d 20}
+                                         :banned    {:1m 0  :5m 0   :1d 1}}}
+                  {:trusted-cidrs []
+                   :ip-header     "x-forwarded-for"})
+         server (jetty/run-jetty handler {:port 0 :join? false})]
+     (try
+       (f {:store store
+           :port  (-> server (.getConnectors) first (.getLocalPort))})
+       (finally
+         (.stop server)
+         (storage/close store)
+         (delete-recursively dir))))))
 
 (defn- http-post [port path body-map]
   (let [client (HttpClient/newHttpClient)
@@ -263,6 +275,114 @@
         (is (= 400 (:status r)))
         (is (= "E_BAD_REQUEST" (-> r :body :code)))))))
 
+(deftest verification-flow-bootstrap-verify-rotate-revoke
+  ;; Plan §Verification line: "full bootstrap + verify + rotate + revoke
+  ;; flow via integration script works end-to-end".
+  ;;
+  ;; Drives the flow with an injected clock so we can advance past the
+  ;; rotation grace window and assert the old key gets rejected.
+  (let [now-ms (atom (System/currentTimeMillis))
+        clock  (fn [] (Date. @now-ms))
+        grace  120  ; short grace so we can step past it in one nudge
+        advance! (fn [secs] (swap! now-ms + (* 1000 secs)))]
+    (with-running-system
+      {:clock clock :grace-seconds grace}
+      (fn [{:keys [port]}]
+        (let [ts  (fn [] (iso8601 (clock)))   ; envelope timestamps follow the injected clock
+              kp1 (gen-ed25519)
+              fp  (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+              ;; 1) bootstrap
+              {b-wire :wire b-pub :pubkey-b64}
+              (build-bootstrap-envelope
+               {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
+                :ts (ts) :host-user-id "" :fp-digest fp})
+              boot (http-post port "/v1/bootstrap"
+                              {:envelope b-wire :pubkey b-pub :alg "ed25519"})
+              _ (is (= 201 (:status boot)) (str "bootstrap: " (:body boot)))
+
+              ;; 2) verify with the original key
+              v1 (build-verify-envelope
+                  {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
+                   :ts (ts) :host-user-id ""
+                   :fp-digest fp :method "POST" :path "/v1/verify"})
+              r1 (http-post port "/v1/verify" {:envelope v1})
+              _ (is (= 200 (:status r1)) (str "verify-old: " (:body r1)))
+
+              ;; 3) rotate: sign with old key, deliver new key
+              kp2 (gen-ed25519)
+              new-pub-b64 (envelope/b64url-encode (:pk-bytes kp2))
+              rot-env (build-verify-envelope
+                       {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
+                        :ts (ts) :host-user-id ""
+                        :fp-digest fp :method "POST" :path "/v1/rotate-key"})
+              rot (http-post port "/v1/rotate-key"
+                             {:envelope   rot-env
+                              :new-pubkey new-pub-b64
+                              :new-alg    "ed25519"})
+              _ (is (= 200 (:status rot)) (str "rotate: " (:body rot)))
+              _ (is (true? (-> rot :body :ok)))
+              _ (is (string? (-> rot :body :new_key_id)))
+
+              ;; 4) within grace: BOTH keys verify
+              v-old-in-grace (build-verify-envelope
+                              {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
+                               :ts (ts) :host-user-id ""
+                               :fp-digest fp :method "POST" :path "/v1/verify"})
+              r-old-grace (http-post port "/v1/verify" {:envelope v-old-in-grace})
+              _ (is (= 200 (:status r-old-grace))
+                    (str "old key in-grace must still verify: " (:body r-old-grace)))
+
+              v-new (build-verify-envelope
+                     {:sk (:sk kp2) :pk-bytes (:pk-bytes kp2)
+                      :ts (ts) :host-user-id ""
+                      :fp-digest fp :method "POST" :path "/v1/verify"})
+              r-new (http-post port "/v1/verify" {:envelope v-new})
+              _ (is (= 200 (:status r-new))
+                    (str "new key must verify: " (:body r-new)))
+
+              ;; 5) advance past grace; old key now rejected (E_FORBIDDEN)
+              _ (advance! (inc grace))
+              v-old-post (build-verify-envelope
+                          {:sk (:sk kp1) :pk-bytes (:pk-bytes kp1)
+                           :ts (ts) :host-user-id ""
+                           :fp-digest fp :method "POST" :path "/v1/verify"})
+              r-old-post (http-post port "/v1/verify" {:envelope v-old-post})
+              _ (is (= 403 (:status r-old-post))
+                    (str "old key post-grace must be rejected: " (:body r-old-post)))
+              _ (is (= "E_FORBIDDEN" (-> r-old-post :body :code)))
+
+              ;; 6) new key still works after grace
+              v-new2 (build-verify-envelope
+                      {:sk (:sk kp2) :pk-bytes (:pk-bytes kp2)
+                       :ts (ts) :host-user-id ""
+                       :fp-digest fp :method "POST" :path "/v1/verify"})
+              r-new2 (http-post port "/v1/verify" {:envelope v-new2})
+              _ (is (= 200 (:status r-new2))
+                    (str "new key post-grace must verify: " (:body r-new2)))
+
+              ;; 7) revoke the new key explicitly
+              rev-env (build-verify-envelope
+                       {:sk (:sk kp2) :pk-bytes (:pk-bytes kp2)
+                        :ts (ts) :host-user-id ""
+                        :fp-digest fp :method "POST" :path "/v1/revoke-key"})
+              rev (http-post port "/v1/revoke-key" {:envelope rev-env})
+              _ (is (= 200 (:status rev)) (str "revoke: " (:body rev)))
+              _ (is (true? (-> rev :body :ok)))
+              _ (is (string? (-> rev :body :revoked_at)))
+
+              ;; 8) subsequent verify with the revoked key is rejected
+              ;; (advance 1s so /verify sees the revoke as in-the-past,
+              ;; not exactly-now — the comparison is `now >= revoked-at`)
+              _ (advance! 1)
+              v-after (build-verify-envelope
+                       {:sk (:sk kp2) :pk-bytes (:pk-bytes kp2)
+                        :ts (ts) :host-user-id ""
+                        :fp-digest fp :method "POST" :path "/v1/verify"})
+              r-after (http-post port "/v1/verify" {:envelope v-after})]
+          (is (= 403 (:status r-after))
+              (str "revoked key must be rejected: " (:body r-after)))
+          (is (= "E_FORBIDDEN" (-> r-after :body :code))))))))
+
 (deftest oversize-body-rejected
   ;; Bring up a system with a tiny 128-byte body cap; POST a payload that
   ;; comfortably exceeds it. The middleware must short-circuit with a 413
@@ -308,3 +428,127 @@
                            :pubkey pubkey-b64 :alg "ed25519"})]
         (is (= 401 (:status r)))
         (is (= "E_UNAUTHORIZED" (-> r :body :code)))))))
+
+;; -- admin endpoints --------------------------------------------------------
+
+(defn- admin-sign-headers
+  "Build the X-Admin-* headers for an outgoing admin request (test
+  mirror of `continuity-auth.admin.cli/sign-request`)."
+  [{:keys [method path body key-id secret]}]
+  (let [ts       (iso8601-now)
+        nonce    (let [b (byte-array 16)] (.nextBytes (SecureRandom.) b) b)
+        body-sha (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                          (or body (byte-array 0)))
+        input    (admin-hmac/signing-input
+                  {:method method :path path :body-sha256 body-sha
+                   :ts ts :nonce nonce})
+        sig      (admin-hmac/hmac-sha256 secret input)]
+    {"X-Admin-Key-Id" key-id
+     "X-Admin-Ts"     ts
+     "X-Admin-Nonce"  (envelope/b64url-encode nonce)
+     "X-Admin-Sig"    (envelope/b64url-encode sig)}))
+
+(defn- admin-http
+  "POST or GET an admin endpoint with the right HMAC headers."
+  [port method path body-map opts]
+  (let [client (HttpClient/newHttpClient)
+        body   (when body-map (.getBytes ^String (json/write-value-as-string body-map) "UTF-8"))
+        hdrs   (admin-sign-headers (merge opts {:method method :path path :body body}))
+        builder (.. (HttpRequest/newBuilder)
+                    (uri (URI. (str "http://127.0.0.1:" port path))))
+        _ (doseq [[k v] hdrs] (.header builder k v))
+        _ (case method
+            "POST" (do (.header builder "Content-Type" "application/json")
+                       (.POST builder
+                              (HttpRequest$BodyPublishers/ofByteArray
+                               (or body (byte-array 0)))))
+            "GET"  (.GET builder))
+        req  (.build builder)
+        resp (.send client req (HttpResponse$BodyHandlers/ofString))]
+    {:status (.statusCode resp)
+     :body   (try (json/read-value (.body resp)
+                                    (json/object-mapper {:decode-key-fn keyword}))
+                  (catch Exception _ (.body resp)))}))
+
+(deftest admin-revoke-key-via-hmac
+  ;; Bootstrap a key as a regular user, then admin-revoke it, then assert
+  ;; that subsequent verify with that key is rejected with E_FORBIDDEN.
+  (let [secret (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+        ks     {"ops-test" secret}]
+    (with-running-system
+      {:keystore ks}
+      (fn [{:keys [port]}]
+        (let [kp (gen-ed25519)
+              fp (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+              {:keys [wire pubkey-b64]} (build-bootstrap-envelope
+                                          {:sk (:sk kp)
+                                           :pk-bytes (:pk-bytes kp)
+                                           :ts (iso8601-now)
+                                           :host-user-id ""
+                                           :fp-digest fp})
+              _ (http-post port "/v1/bootstrap"
+                            {:envelope wire :pubkey pubkey-b64 :alg "ed25519"})
+              key-id-b64 (envelope/b64url-encode
+                          (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                                   (:pk-bytes kp)))
+              rev (admin-http port "POST" "/v1/admin/revoke-key"
+                              {:key_id key-id-b64}
+                              {:key-id "ops-test" :secret secret})]
+          (is (= 200 (:status rev)) (str "admin-revoke: " (:body rev)))
+          (is (true? (-> rev :body :ok)))
+          (let [v (build-verify-envelope
+                   {:sk (:sk kp) :pk-bytes (:pk-bytes kp)
+                    :ts (iso8601-now) :host-user-id ""
+                    :fp-digest fp :method "POST" :path "/v1/verify"})
+                r (http-post port "/v1/verify" {:envelope v})]
+            (is (= 403 (:status r)))
+            (is (= "E_FORBIDDEN" (-> r :body :code)))))))))
+
+(deftest admin-rejects-unsigned-call
+  (let [secret (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+        ks     {"ops-test" secret}]
+    (with-running-system
+      {:keystore ks}
+      (fn [{:keys [port]}]
+        (let [r (http-post port "/v1/admin/revoke-key" {:key_id "deadbeef"})]
+          (is (= 401 (:status r)))
+          (is (= "E_UNAUTHORIZED" (-> r :body :code))))))))
+
+(deftest admin-rejects-wrong-key
+  (let [secret (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+        ks     {"ops-test" secret}
+        wrong  (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)]
+    (with-running-system
+      {:keystore ks}
+      (fn [{:keys [port]}]
+        (let [r (admin-http port "POST" "/v1/admin/revoke-key"
+                            {:key_id "deadbeef"}
+                            {:key-id "ops-test" :secret wrong})]
+          (is (= 401 (:status r)))
+          (is (= "E_UNAUTHORIZED" (-> r :body :code))))))))
+
+(deftest admin-disabled-without-keystore
+  (with-running-system
+    (fn [{:keys [port]}]
+      (let [r (admin-http port "POST" "/v1/admin/revoke-key"
+                          {:key_id "deadbeef"}
+                          {:key-id "ops-test"
+                           :secret (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)})]
+        (is (= 403 (:status r)))
+        (is (= "E_FORBIDDEN" (-> r :body :code)))))))
+
+(deftest admin-config-dumps-effective-with-redaction
+  (let [secret (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+        ks     {"ops-test" secret}
+        cfg    {:server {:port 18080}
+                :hmac   {:admin-keys-path "/etc/fpl/admin.edn"}
+                :observability {:prometheus-bearer "topsecret"}}]
+    (with-running-system
+      {:keystore ks :config cfg}
+      (fn [{:keys [port]}]
+        (let [r (admin-http port "GET" "/v1/admin/config" nil
+                            {:key-id "ops-test" :secret secret})]
+          (is (= 200 (:status r)) (str "config: " (:body r)))
+          (is (= 18080 (-> r :body :server :port)))
+          (is (= "<redacted>" (-> r :body :hmac :admin-keys-path)))
+          (is (= "<redacted>" (-> r :body :observability :prometheus-bearer))))))))

@@ -2,8 +2,11 @@
   "Top-level Reitit router. Mounts all v1 endpoints under /v1 and the
   ops endpoints (/healthz, /readyz, /metrics) at the root."
   (:require
+   [continuity-auth.server.http.handlers.admin :as admin]
    [continuity-auth.server.http.handlers.bootstrap :as bootstrap]
    [continuity-auth.server.http.handlers.health :as health]
+   [continuity-auth.server.http.handlers.revoke-key :as revoke-key]
+   [continuity-auth.server.http.handlers.rotate-key :as rotate-key]
    [continuity-auth.server.http.handlers.verify :as verify]
    [continuity-auth.server.http.middleware :as mw]
    [continuity-auth.server.observability.metrics :as metrics]
@@ -20,7 +23,12 @@
 
    ["/v1"
     ["/bootstrap"        {:post {:handler (bootstrap/make-handler deps)}}]
-    ["/verify"           {:post {:handler (verify/make-handler    deps)}}]]])
+    ["/verify"           {:post {:handler (verify/make-handler    deps)}}]
+    ["/rotate-key"       {:post {:handler (rotate-key/make-handler deps)}}]
+    ["/revoke-key"       {:post {:handler (revoke-key/make-handler deps)}}]
+    ["/admin"
+     ["/revoke-key"      {:post {:handler (admin/make-revoke-key-handler deps)}}]
+     ["/config"          {:get  {:handler (admin/make-config-handler deps)}}]]]])
 
 (defn make-handler
   "Construct the full Ring handler stack:

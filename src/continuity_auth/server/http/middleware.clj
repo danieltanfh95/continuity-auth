@@ -111,7 +111,10 @@
 
   Only applies to body-bearing methods. On accept the request's `:body`
   is replaced with a `ByteArrayInputStream` over the captured bytes so
-  downstream middleware (e.g. wrap-json-body) sees a normal Ring body."
+  downstream middleware (e.g. wrap-json-body) sees a normal Ring body.
+  The captured bytes are ALSO attached at `:cauth/raw-body` so handlers
+  that need to compute an HMAC over the raw body (e.g. admin endpoints)
+  do not have to round-trip through JSON re-serialization."
   [handler max-bytes]
   (let [limit (long max-bytes)]
     (fn [request]
@@ -125,7 +128,8 @@
                 ^java.io.InputStream body (:body request)
                 bytes  (when body (read-bounded body limit))]
             (handler (cond-> request
-                       bytes (assoc :body (java.io.ByteArrayInputStream. bytes)))))
+                       bytes (assoc :body         (java.io.ByteArrayInputStream. bytes)
+                                    :cauth/raw-body bytes))))
           (handler request))))))
 
 (defn wrap-json-response

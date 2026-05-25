@@ -255,4 +255,4 @@
   deltas; the merge and score namespaces must agree."
   #{:ls-match :host-link-committed :ip-mismatch :fp-mismatch
     :all-mismatch :anomaly :decay :erasure-requested :admin-reset
-    :bootstrap})
+    :bootstrap :rotate-key :revoke-key :admin-revoke})

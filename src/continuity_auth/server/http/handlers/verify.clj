@@ -69,7 +69,7 @@
           _        (when-not ip
                      (errors/fail! :E_BAD_REQUEST "client ip not available"))
           incoming {:ip ip :fp-digest (:fp-digest env)}
-          classification (merge/classify store snap incoming pubkey)
+          classification (merge/classify store snap incoming pubkey now)
           identity-eid   (:identity-eid classification)]
       (case (:kind classification)
         :revoked-pubkey

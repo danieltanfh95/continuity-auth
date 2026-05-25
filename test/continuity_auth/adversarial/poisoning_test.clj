@@ -133,7 +133,7 @@
               ;; the victim's fingerprint.
               result    (merge/classify store snap
                                          {:ip "5.6.7.8" :fp-digest shared-fp}
-                                         pubkey)]
+                                         pubkey (Date.))]
           (is (true? (-> result :cross-cluster :fp))
               "cross-cluster fp-match must be flagged for ops review")
           (let [vid (identity-of-pubkey store snap (:pid victim))
@@ -153,7 +153,7 @@
               ;; Same user, same key, new IP.
               result (merge/classify store snap0
                                       {:ip "172.16.0.1" :fp-digest (:fp user)}
-                                      pubkey)]
+                                      pubkey (Date.))]
           (is (= :new-tuple (:kind result))
               "a new IP is a new tuple in the same cluster")
           (is (= #{:ip} (:mismatch-axes result))
@@ -185,5 +185,5 @@
               pubkey (storage/find-pubkey-by-thumbprint store snap1 (:pid user))
               result (merge/classify store snap1
                                       {:ip "10.0.0.1" :fp-digest (:fp user)}
-                                      pubkey)]
+                                      pubkey (Date.))]
           (is (= :revoked-pubkey (:kind result))))))))

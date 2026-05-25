@@ -93,13 +93,66 @@ Main rate-limit decision path. The host backend calls this for every request it 
 
 **Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN` (revoked key, banned tier), `E_REPLAY`, `E_RATE`.
 
-### `POST /v1/rotate-key` *(planned, v1.1)*
+### `POST /v1/rotate-key`
 
-Replace the LS keypair. Envelope signed with the OLD key. New pubkey valid immediately; old pubkey valid for the configured grace period (default 24 h).
+Replace the LS keypair. Envelope signed with the OLD key carries the user's intent; the request body adds the new pubkey bytes and alg.
 
-### `POST /v1/revoke-key` *(planned, v1.1)*
+**Request body:**
+
+```json
+{
+  "envelope":   { /* wire envelope, key-id = OLD thumbprint, signed by OLD private key */ },
+  "new-pubkey": "<base64url canonical bytes of NEW pubkey>",
+  "new-alg":    "ed25519"
+}
+```
+
+**Response (200):**
+
+```json
+{ "ok": true,
+  "new_key_id":       "<base64url SHA-256 thumbprint of new pubkey>",
+  "grace_expires_at": "2026-05-25T13:34:56.789Z" }
+```
+
+Within the grace window (config `:grace/:key-rotation-overlap-seconds`, default 86 400) BOTH keys verify; after the window, the old key is treated as revoked. The new pubkey is attached to the same identity (no merge, no cluster change).
+
+**Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN` (old key already revoked), `E_REPLAY`, `E_CONFLICT` (new pubkey already registered).
+
+### `POST /v1/revoke-key`
 
 User-initiated revocation. Envelope signed with the key being revoked.
+
+**Request body:** `{ "envelope": <wire envelope, key-id = thumbprint to revoke, signed by that key> }`
+
+**Response (200):** `{ "ok": true, "revoked_at": "2026-05-25T13:34:56.789Z" }`
+
+No grace window — the key is rejected from the next request onward. The identity is otherwise unchanged; the user can call `/v1/bootstrap` with a fresh keypair to start a new cluster.
+
+**Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN`, `E_REPLAY`.
+
+### `POST /v1/admin/revoke-key`
+
+Operator-initiated revocation by thumbprint. HMAC-authenticated, no user signature required — this is the escape hatch for compromised keys whose holders can no longer (or won't) sign a `/v1/revoke-key` envelope.
+
+**Headers** (all required):
+
+| Header           | Value                                                                                       |
+|------------------|---------------------------------------------------------------------------------------------|
+| `X-Admin-Key-Id` | identifier of the admin key (must match a record in the server's keystore)                  |
+| `X-Admin-Ts`     | ISO 8601 timestamp, within ±60 s of server clock                                            |
+| `X-Admin-Nonce`  | base64url 16 raw bytes (replay-cached, same 120 s TTL as envelope nonces)                   |
+| `X-Admin-Sig`    | base64url HMAC-SHA256 over `METHOD \n PATH \n b64url(sha256(body)) \n TS \n b64url(NONCE)`  |
+
+**Request body:** `{ "key_id": "<base64url thumbprint>" }`
+
+**Response (200):** `{ "ok": true, "revoked_at": "…" }`
+
+**Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED` (signature / clock-skew / unknown key-id), `E_FORBIDDEN` (admin keystore not configured — admin endpoints disabled), `E_REPLAY`, `E_NOT_FOUND` (thumbprint not in DB).
+
+### `GET /v1/admin/config`
+
+Dump the effective aero-resolved config (env vars applied) for ops verification. Same HMAC auth as above. Sensitive fields (`:prometheus-bearer`, `:host-keys-path`, `:admin-keys-path`) are returned as `"<redacted>"`.
 
 ### `POST /v1/link-account` *(planned, v1.1)*
 

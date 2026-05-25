@@ -105,7 +105,7 @@
                                           (random-bytes 32) (random-bytes 32))
             snap (storage/snapshot store)
             result (merge/classify store snap
-                                    {:ip ip :fp-digest fp} pubkey)]
+                                    {:ip ip :fp-digest fp} pubkey (Date.))]
         (is (= :exact-observation (:kind result)))
         (is (= #{} (:mismatch-axes result)))))))
 
@@ -119,7 +119,7 @@
                                           (random-bytes 32) (random-bytes 32))
             snap (storage/snapshot store)
             result (merge/classify store snap
-                                    {:ip ip2 :fp-digest fp} pubkey)]
+                                    {:ip ip2 :fp-digest fp} pubkey (Date.))]
         (is (= :new-tuple (:kind result)))
         (is (= #{:ip} (:mismatch-axes result)))))))
 
@@ -133,7 +133,7 @@
                                           (random-bytes 32) (random-bytes 32))
             snap (storage/snapshot store)
             result (merge/classify store snap
-                                    {:ip ip :fp-digest fp2} pubkey)]
+                                    {:ip ip :fp-digest fp2} pubkey (Date.))]
         (is (= :new-tuple (:kind result)))
         (is (= #{:fp} (:mismatch-axes result)))))))
 
@@ -145,7 +145,7 @@
             snap (storage/snapshot store)
             result (merge/classify store snap
                                     {:ip "172.16.0.1" :fp-digest (random-bytes 32)}
-                                    pubkey)]
+                                    pubkey (Date.))]
         (is (= :new-tuple (:kind result)))
         (is (= #{:ip :fp} (:mismatch-axes result)))))))
 
@@ -159,7 +159,7 @@
               snap   (storage/snapshot store)
               result (merge/classify store snap
                                       {:ip "10.0.0.2" :fp-digest shared-fp}
-                                      pubkey)]
+                                      pubkey (Date.))]
           (is (= :new-tuple (:kind result)))
           (is (true? (-> result :cross-cluster :fp))
               "cross-cluster fp-match should be flagged as advisory"))))))
@@ -176,8 +176,27 @@
                      store snap (:pubkey/id pubkey))
             result (merge/classify store snap
                                     {:ip "1.1.1.1" :fp-digest (random-bytes 32)}
-                                    pubkey)]
+                                    pubkey (Date.))]
         (is (= :revoked-pubkey (:kind result)))))))
+
+(deftest classify-future-dated-revoked-at-is-still-valid
+  ;; A future-dated :pubkey/revoked-at is the in-grace state from rotation
+  ;; (ontology §4). It must NOT be treated as revoked yet.
+  (with-store
+    (fn [store]
+      (let [{:keys [pubkey]} (bootstrap! store "1.1.1.1" (random-bytes 32)
+                                          (random-bytes 32) (random-bytes 32))
+            future (Date. (+ (System/currentTimeMillis) 3600000))
+            _      (storage/transact! store [{:db/id (:db/id pubkey)
+                                              :pubkey/revoked-at future}])
+            snap   (storage/snapshot store)
+            pubkey (storage/find-pubkey-by-thumbprint
+                     store snap (:pubkey/id pubkey))
+            result (merge/classify store snap
+                                    {:ip "1.1.1.1" :fp-digest (random-bytes 32)}
+                                    pubkey (Date.))]
+        (is (not= :revoked-pubkey (:kind result))
+            "in-grace pubkey must not be treated as revoked")))))
 
 (deftest classify-orphan-pubkey
   ;; Synthesize a pubkey record with no :pubkey/identity to simulate the
@@ -188,7 +207,8 @@
       (let [snap (storage/snapshot store)
             result (merge/classify store snap
                                     {:ip "1.1.1.1" :fp-digest (random-bytes 32)}
-                                    {:db/id 123 :pubkey/id (random-bytes 32)})]
+                                    {:db/id 123 :pubkey/id (random-bytes 32)}
+                                    (Date.))]
         (is (= :orphan-pubkey (:kind result)))))))
 
 ;; -- classification-tx semantics ------------------------------------------
@@ -271,7 +291,8 @@
                 (let [snap (storage/snapshot store)
                       pubkey (storage/find-pubkey-by-thumbprint store snap pid)
                       result (merge/classify store snap
-                                              {:ip ip :fp-digest fp} pubkey)]
+                                              {:ip ip :fp-digest fp} pubkey
+                                              (Date.))]
                   (when (#{:exact-observation :new-tuple} (:kind result))
                     (let [ident (storage/pull
                                   store snap (:identity-eid result)

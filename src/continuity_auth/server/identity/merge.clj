@@ -147,6 +147,14 @@
               t))
           cluster-tuples)))
 
+(defn- revoked-at?
+  "True iff `record` has a `:pubkey/revoked-at` that is at or before `now`.
+  A future-dated `:pubkey/revoked-at` is the in-grace state (see
+  ontology §4 and `envelope-check/resolve-existing-pubkey!`)."
+  [record ^java.util.Date now]
+  (let [^java.util.Date r (:pubkey/revoked-at record)]
+    (and r (not (.before now r)))))
+
 (defn classify
   "Classify the cluster outcome for a verified /verify request.
 
@@ -155,6 +163,7 @@
     incoming        — {:ip <string>, :fp-digest <bytes>}
     pubkey-record   — the result of storage/find-pubkey-by-thumbprint:
                       {:db/id ..., :pubkey/identity {:db/id ...}, ...}
+    now             — java.util.Date used to evaluate revocation grace
 
   Returns a map:
     {:kind       :exact-observation | :new-tuple | :revoked-pubkey
@@ -164,7 +173,9 @@
      :mismatch-axes #{:ip :fp} | #{}
      :cross-cluster {:ip <bool> :fp <bool>}}
 
-  `:revoked-pubkey` — pubkey is revoked; caller must reject the request.
+  `:revoked-pubkey` — pubkey is revoked AS OF `now`; caller must reject.
+                     A future-dated revoked-at (rotation grace) is NOT
+                     revoked yet.
   `:orphan-pubkey`  — pubkey has no identity attached (an integrity
                       error; caller must reject and alert).
   `:exact-observation` — incoming tuple matches an existing tuple in
@@ -175,9 +186,9 @@
 
   The :cross-cluster map records advisory matches against tuples in
   OTHER identities (not used for scoring; only logged)."
-  [store snap incoming pubkey-record]
+  [store snap incoming pubkey-record now]
   (cond
-    (some? (:pubkey/revoked-at pubkey-record))
+    (revoked-at? pubkey-record (->date now))
     {:kind :revoked-pubkey}
 
     (nil? (:pubkey/identity pubkey-record))

@@ -55,15 +55,22 @@
   (:pubkey/alg pubkey-record))
 
 (defn resolve-existing-pubkey!
-  "Look up the pubkey by :key-id in storage. Returns the record;
-  throws if not found or if it has been revoked."
-  [store snap envelope]
+  "Look up the pubkey by :key-id in storage. Returns the record; throws
+  if not found or if it has been revoked as of `now`.
+
+  Rotation sets `:pubkey/revoked-at = now + grace_seconds` on the old
+  key, so a future-dated `:pubkey/revoked-at` is the in-grace state —
+  the key is still valid until the timestamp passes. Explicit revoke
+  sets `:pubkey/revoked-at = now` and takes effect immediately. The
+  comparison is `revoked? = (revoked-at != nil) && (now >= revoked-at)`."
+  [store snap envelope ^java.util.Date now]
   (let [thumb  (:key-id envelope)
         record (storage/find-pubkey-by-thumbprint store snap thumb)]
     (when-not record
       (errors/fail! :E_UNAUTHORIZED "unknown key-id"))
-    (when (some? (:pubkey/revoked-at record))
-      (errors/fail! :E_FORBIDDEN "pubkey revoked"))
+    (let [^java.util.Date revoked-at (:pubkey/revoked-at record)]
+      (when (and revoked-at (not (.before now revoked-at)))
+        (errors/fail! :E_FORBIDDEN "pubkey revoked")))
     record))
 
 ;; -- signature verification ------------------------------------------------
@@ -94,7 +101,7 @@
   Returns the pubkey record on success."
   [{:keys [store snap envelope tolerance-seconds nonce-ttl-seconds now]}]
   (check-timestamp! envelope tolerance-seconds now)
-  (let [record (resolve-existing-pubkey! store snap envelope)]
+  (let [record (resolve-existing-pubkey! store snap envelope now)]
     (verify-signature!
      envelope
      (canonical-bytes-from-pubkey-record record)
