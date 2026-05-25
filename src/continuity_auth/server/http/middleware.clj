@@ -79,18 +79,23 @@
 (defn- read-bounded
   "Read at most `limit` bytes from `in`. Returns the byte array if the
   stream is exhausted at or under the limit; throws E_PAYLOAD_TOO_LARGE
-  otherwise. We read into a fixed-size buffer to make the upper bound
-  hard (no chunked-upload escape hatch)."
+  otherwise.
+
+  Buffer size is exactly `limit` (not `inc limit`). The boundary case is:
+  if the buffer fills (`total == limit`) and one more byte is available
+  on the stream, we reject. The previous implementation used a buffer
+  of `limit+1` and could return `limit+1` bytes when the stream EOF'd
+  exactly there — off by one (codex M5)."
   ^bytes [^java.io.InputStream in ^long limit]
-  (let [buf (byte-array (inc limit))]
+  (let [buf (byte-array limit)]
     (loop [total 0]
-      (let [room (- (alength buf) total)]
+      (let [room (- limit total)]
         (if (zero? room)
-          ;; We read limit+1 bytes; one more byte still available means
-          ;; the actual length exceeds the limit.
+          ;; Buffer is full; if there's still a byte on the wire the
+          ;; body is over-limit.
           (let [extra (.read in)]
             (if (neg? extra)
-              (java.util.Arrays/copyOf buf total)
+              buf
               (errors/fail! :E_PAYLOAD_TOO_LARGE "request body too large")))
           (let [n (.read in buf total room)]
             (cond
@@ -120,8 +125,16 @@
     (fn [request]
       (let [method (:request-method request)]
         (if (body-bearing-methods method)
-          (let [clen   (some-> (get-in request [:headers "content-length"])
-                                (Long/parseLong))
+          (let [raw-clen (get-in request [:headers "content-length"])
+                clen     (when raw-clen
+                           (try (Long/parseLong raw-clen)
+                                (catch NumberFormatException _
+                                  ;; Codex M6: an unparseable Content-Length
+                                  ;; previously fell through to wrap-error
+                                  ;; and returned 500. That gave malformed-
+                                  ;; header floods a cheap log-spam path.
+                                  (errors/fail! :E_BAD_REQUEST
+                                                "malformed Content-Length"))))
                 _      (when (and clen (> ^long clen limit))
                          (errors/fail! :E_PAYLOAD_TOO_LARGE
                                        "request body too large"))
@@ -222,7 +235,14 @@
                                (map str/trim)
                                (remove str/blank?))]
                 (some (fn [candidate]
-                        (when-not (ip-in-cidrs? candidate trusted-cidrs)
+                        ;; Must be a parseable IPv4 AND not a trusted
+                        ;; proxy. Non-IP strings (codex 7 / claude 3)
+                        ;; previously slipped through because
+                        ;; `ip-in-cidrs?` returns nil for unparseable
+                        ;; input, which `when-not` then treated as
+                        ;; "not in trusted" → accepted as the client.
+                        (when (and (ip->long candidate)
+                                   (not (ip-in-cidrs? candidate trusted-cidrs)))
                           candidate))
                       chain)))
             remote)))))
@@ -235,3 +255,54 @@
   (fn [request]
     (let [ip (extract-client-ip request trusted-cidrs ip-header)]
       (handler (assoc request :cauth/client-ip ip)))))
+
+;; -- bootstrap rate limit --------------------------------------------------
+
+(defn wrap-bootstrap-rate-limit
+  "Refuse POST /v1/bootstrap requests from any single IP that exceed
+  `limit-per-minute` within the last `window-ms`. Hardcoded v1
+  mitigation for codex 4 / H4 — anyone can fire valid self-signed
+  bootstraps and write unbounded identity + pubkey + tuple rows
+  otherwise.
+
+  State shape (atom):  `{ip-string → {:count long :start-ms long}}`
+  - `:start-ms` is the wall-clock at which the IP's window began.
+  - `:count`    is the request count within that window.
+
+  Stale entries are swept inline on each request. State grows with
+  recent-IP cardinality; bounded for realistic traffic, acceptable for
+  v1. A future iteration should back this with the Datalevin
+  `ratelimit/window.clj` infrastructure for cross-instance fairness.
+
+  Rejects with 429 / `E_RATE` BEFORE any JSON parsing, signature
+  verification, or DB write."
+  [handler {:keys [path limit-per-minute window-ms]
+            :or {path             "/v1/bootstrap"
+                 limit-per-minute 5
+                 window-ms        60000}}]
+  (let [state (atom {})]
+    (fn [request]
+      (if (and (= :post (:request-method request))
+               (= path (:uri request)))
+        (let [ip     (or (:cauth/client-ip request) (:remote-addr request) "unknown")
+              now-ms (System/currentTimeMillis)
+              new-state
+              (swap! state
+                     (fn [s]
+                       (let [swept (into {}
+                                         (filter (fn [[_ {:keys [start-ms]}]]
+                                                   (< (- now-ms (long start-ms))
+                                                      (long window-ms)))
+                                                 s))
+                             {:keys [count start-ms]} (get swept ip)
+                             fresh? (or (nil? start-ms)
+                                        (>= (- now-ms (long start-ms))
+                                            (long window-ms)))
+                             c (if fresh? 1 (inc (long count)))
+                             ws (if fresh? now-ms start-ms)]
+                         (assoc swept ip {:count c :start-ms ws}))))
+              cnt (get-in new-state [ip :count])]
+          (if (> (long cnt) (long limit-per-minute))
+            (errors/error-response :E_RATE window-ms)
+            (handler request)))
+        (handler request)))))

@@ -37,16 +37,21 @@
            → body-size-limit
              → JSON in/out
                → trusted-proxy IP
-                 → router
+                 → bootstrap per-IP rate limit
+                   → router
 
   `deps` is the merged map of system dependencies. `proxy-cfg` controls
   the trusted-proxy IP extraction (parsed via mw/parse-trusted-cidrs).
   `:max-body-bytes` is the hard upper bound on a request body in bytes
-  (default 65 536, matching `config.edn :limits/:max-body-bytes`)."
-  [deps {:keys [trusted-cidrs ip-header max-body-bytes]
+  (default 65 536, matching `config.edn :limits/:max-body-bytes`).
+
+  The bootstrap rate-limit middleware sits INSIDE wrap-trusted-proxy-ip
+  so it can read `:cauth/client-ip`. Defaults: 5 bootstraps/minute/IP."
+  [deps {:keys [trusted-cidrs ip-header max-body-bytes bootstrap-rl]
          :or {trusted-cidrs   []
               ip-header       "x-forwarded-for"
-              max-body-bytes  65536}}]
+              max-body-bytes  65536
+              bootstrap-rl    {}}}]
   (-> (ring/ring-handler
        (ring/router (make-routes deps))
        (ring/create-default-handler
@@ -54,6 +59,7 @@
          (fn [_] {:status 404
                   :headers {"Content-Type" "application/json; charset=utf-8"}
                   :body "{\"ok\":false,\"code\":\"E_NOT_FOUND\",\"retry_after_ms\":0}"})}))
+      (mw/wrap-bootstrap-rate-limit bootstrap-rl)
       (mw/wrap-trusted-proxy-ip {:trusted-cidrs trusted-cidrs
                                   :ip-header     ip-header})
       mw/wrap-json-response
