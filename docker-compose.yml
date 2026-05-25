@@ -26,7 +26,9 @@ services:
     environment:
       FPL_HTTP_HOST: 0.0.0.0
       FPL_HTTP_PORT: 8080
-      FPL_DTLV_URI: dtlv://admin:datalevin@datalevin:8898/continuity-auth
+      # Dev-default credential. Override FPL_DTLV_PASSWORD in .env (or your
+      # secrets manager) before deploying anywhere a stranger can reach.
+      FPL_DTLV_URI: dtlv://admin:${FPL_DTLV_PASSWORD:-change-me}@datalevin:8898/continuity-auth
       FPL_LOG_LEVEL: info
       FPL_OTEL_ENDPOINT: ""
     healthcheck:

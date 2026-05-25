@@ -70,8 +70,8 @@
   "Deterministic fallback secret used when the supplied key-id is
   unknown. HMAC-SHA256 over any 32-byte key takes the same wall-clock
   time, so computing against this dummy makes the unknown-key code path
-  indistinguishable from a valid-key-bad-sig path (codex M3 / claude 5
-  — admin timing oracle)."
+  indistinguishable from a valid-key-bad-sig path — closing the
+  admin-key-id timing oracle."
   (byte-array 32))
 
 (defn- safe-b64url-decode
@@ -97,8 +97,8 @@
                         final auth-failed? AND
     - bad signature   → HMAC computed; constant-time-compare fails
 
-  The unknown-key oracle (codex M3 / claude 5) — measure latency for
-  `valid-key, bad-sig` vs `unknown-key, anything` — is closed."
+  The unknown-key timing oracle — measure latency for `valid-key,
+  bad-sig` vs `unknown-key, anything` — is closed."
   [{:keys [keystore tolerance-seconds nonce-ttl-seconds store ^java.util.Date now]} request]
   (when (empty? keystore)
     (errors/fail! :E_FORBIDDEN "admin endpoints disabled (no admin keystore loaded)"))

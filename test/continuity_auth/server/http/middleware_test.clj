@@ -8,7 +8,7 @@
   (:import
    (java.io ByteArrayInputStream)))
 
-;; -- read-bounded / wrap-body-size-limit (codex M5, claude M6) -------------
+;; -- read-bounded / wrap-body-size-limit -----------------------------------
 
 (defn- exec-body-size
   "Run wrap-body-size-limit at `limit` against an in-memory body, returning
@@ -35,7 +35,7 @@
       (is (= limit (alength ^bytes (:cauth/raw-body captured)))))))
 
 (deftest body-of-exactly-limit-plus-one-rejected
-  (testing "Codex M5 regression: with the old `inc limit` buffer, a body of
+  (testing "Off-by-one regression: with the old `inc limit` buffer, a body of
             exactly limit+1 bytes (chunked, no Content-Length) would slip
             through as a `limit+1`-byte array. The tight buffer must reject."
     (let [limit 128
@@ -53,16 +53,16 @@
       (is (= 413 (:status response))))))
 
 (deftest content-length-malformed-returns-400
-  (testing "Claude 9 / codex M6 regression: Content-Length `abc` previously
-            threw NumberFormatException → fell through wrap-error → 500.
-            Must return 400 E_BAD_REQUEST."
+  (testing "Content-Length parse regression: a non-numeric value like `abc`
+            previously threw NumberFormatException → fell through wrap-error
+            → 500. Must return 400 E_BAD_REQUEST."
     (let [limit 128
           bs    (byte-array 10 (byte 65))
           {:keys [response]} (exec-body-size limit bs "abc")]
       (is (= 400 (:status response)))
       (is (str/includes? (str (:body response)) "E_BAD_REQUEST")))))
 
-;; -- extract-client-ip (codex 7 / claude 3) --------------------------------
+;; -- extract-client-ip -----------------------------------------------------
 
 (deftest xff-non-ip-candidate-falls-back-to-remote
   (testing "If the chosen X-Forwarded-For candidate is not a parseable
@@ -86,7 +86,7 @@
       (is (= "203.0.113.7"
              (mw/extract-client-ip req trusted "x-forwarded-for"))))))
 
-;; -- wrap-bootstrap-rate-limit (codex 4 / H4) ------------------------------
+;; -- wrap-bootstrap-rate-limit ---------------------------------------------
 
 (deftest bootstrap-rate-limit-allows-up-to-cap
   (testing "Up to `limit-per-minute` requests from the same IP pass through."

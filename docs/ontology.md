@@ -130,18 +130,26 @@ The cluster never grows across identities through `ip` or `fp-digest` alone. Cro
 
 ## 8. Cross-identity merge (host-link)
 
-The only way two identities ever become one is via a host-link attestation that says "identity-A and identity-B both belong to host_user_id `X`". Operationally:
+> **Status (v0.1.0):** the host-link path described below is *specified, not
+> yet implemented.* The `:host-link/*` schema attributes exist, but
+> `POST /v1/link-account` is not wired as an HTTP handler in v0.1.0 — see
+> `docs/api.md` (planned, v1.1) and `docs/threat-model.md` T8/T14. Tier
+> uplift from anonymous → tracked in v0.1.0 happens via sustained
+> observation in the LS-anchored cluster (`score.clj`); the host-link path
+> is purely additive.
 
-1. Host calls `POST /v1/link-account` attesting `(host_user_id, identity_ref)`. Each call creates an in-state `HostLink` with `:host-link/state :pending`.
-2. If `host_user_id` is already linked to a *different* identity, we have a pending merge candidate:
+The intended-by-design way two identities would become one is via a host-link attestation that says "identity-A and identity-B both belong to host_user_id `X`". Operationally:
+
+1. Host would call `POST /v1/link-account` attesting `(host_user_id, identity_ref)`. Each call would create an in-state `HostLink` with `:host-link/state :pending`.
+2. If `host_user_id` is already linked to a *different* identity, that would be a pending merge candidate:
    - Record `(identity-A, identity-B, host_user_id, cool-until = now + 24h)` as a `MergePending`.
    - Emit ops alert.
-3. After `cool-until`, if no admin abort, the merge commits:
+3. After `cool-until`, if no admin abort, the merge would commit:
    - All tuples, pubkeys, host-links, requests, trust-events from identity-B are re-pointed to identity-A.
    - Identity-B is retracted.
    - Identity-A's score = max(A.score, B.score). Tier re-projects.
    - Buckets: max(A.bucket.count, B.bucket.count) per (window-size, start).
-4. If ops aborts within the cooling-off, the merge is dropped and a `TrustEvent` is recorded.
+4. If ops aborts within the cooling-off, the merge would be dropped and a `TrustEvent` recorded.
 
 The 24h is a *blast radius reducer*: a compromised host HMAC cannot merge arbitrary identities silently in the time it takes ops to detect. It does not eliminate the risk — it shrinks it.
 

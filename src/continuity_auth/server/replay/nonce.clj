@@ -75,8 +75,8 @@
   composition; tests can call sweep! directly without this.
 
   Failures (any non-Interrupted Throwable) are logged via `mu/log` as
-  `:cauth/nonce-sweeper-failed` rather than silently swallowed (codex M8).
-  Without this, storage errors hide until the DB fills."
+  `:cauth/nonce-sweeper-failed` rather than silently swallowed. Without
+  this, storage errors hide until the DB fills."
   [store interval-seconds]
   (let [running? (volatile! true)
         thread   (Thread.
@@ -92,7 +92,7 @@
                         (catch Throwable t
                           ;; Best-effort: keep the cleaner alive across
                           ;; per-iteration errors, BUT log the failure so
-                          ;; ops can see it (codex M8).
+                          ;; ops can see it.
                           (mu/log :cauth/nonce-sweeper-failed
                                   :exception   (.getClass t)
                                   :message     (ex-message t))))

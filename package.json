@@ -1,6 +1,6 @@
 {
   "name": "@continuity-auth/client",
-  "version": "0.1.0-SNAPSHOT",
+  "version": "0.1.0",
   "description": "Zero-auth trust client: signs requests with a non-extractable Web Crypto private key for use with the continuity-auth service.",
   "license": "MIT",
   "type": "module",
@@ -34,7 +34,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/continuity-auth/continuity-auth"
+    "url": "https://github.com/danieltanfh/continuity-auth"
+  },
+  "author": "Daniel Tan",
+  "homepage": "https://github.com/danieltanfh/continuity-auth",
+  "bugs": {
+    "url": "https://github.com/danieltanfh/continuity-auth/issues"
   },
   "keywords": [
     "rate-limiting",

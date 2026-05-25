@@ -3,7 +3,7 @@
 ;; Resolution order: this file is read by aero/read-config with the current
 ;; :profile (:dev, :test, :prod). Values can be overridden by env vars using
 ;; the #env reader tag, with a default fallback in #or.
-{:continuity-auth/version "0.1.0-SNAPSHOT"
+{:continuity-auth/version "0.1.0"
 
  :server
  {:host        #or [#env FPL_HTTP_HOST "0.0.0.0"]

@@ -101,7 +101,7 @@
   Auth: a non-blank `:bearer` is REQUIRED. Requests must carry
   `Authorization: Bearer <token>` matching exactly (constant-time
   compare). If `bearer` is nil or blank, /metrics always returns 401 —
-  refusing to ship an open metrics endpoint by default (codex M1).
+  refusing to ship an open metrics endpoint by default.
   Operators who genuinely want /metrics open in a sandboxed network
   should set `FPL_PROM_BEARER` and gate it at the upstream proxy."
   [{:keys [registry bearer]}]

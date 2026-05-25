@@ -9,7 +9,7 @@
    [clojure.tools.build.api :as b]))
 
 (def lib    'org.continuity-auth/server)
-(def version (or (System/getenv "FPL_VERSION") "0.1.0-SNAPSHOT"))
+(def version (or (System/getenv "FPL_VERSION") "0.1.0"))
 (def class-dir "target/classes")
 (def jar-file  "target/continuity-auth.jar")
 (def basis     (delay (b/create-basis {:project "deps.edn"})))

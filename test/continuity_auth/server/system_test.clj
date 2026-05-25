@@ -2,10 +2,10 @@
   "Boot the integrant system from resources/config.edn and exercise one
   bootstrap+verify against it.
 
-  This is the regression substrate for the `:size` → `:window` config rename
-  (codex 6 / security-review C6): until this test existed, the integration
-  suite constructed `:windows` directly with `:window` keys, bypassing the
-  config.edn wire path. A real deployment with `:size` would have set every
+  This is the regression substrate for the `:size` → `:window` config
+  rename: until this test existed, the integration suite constructed
+  `:windows` directly with `:window` keys, bypassing the config.edn
+  wire path. A real deployment with `:size` would have set every
   per-tier limit lookup to nil → 0 → throttle every request."
   (:require
    [clojure.test :refer [deftest is testing]]

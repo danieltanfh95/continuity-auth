@@ -85,7 +85,7 @@
   if the buffer fills (`total == limit`) and one more byte is available
   on the stream, we reject. The previous implementation used a buffer
   of `limit+1` and could return `limit+1` bytes when the stream EOF'd
-  exactly there — off by one (codex M5)."
+  exactly there — off by one."
   ^bytes [^java.io.InputStream in ^long limit]
   (let [buf (byte-array limit)]
     (loop [total 0]
@@ -236,8 +236,8 @@
                                (remove str/blank?))]
                 (some (fn [candidate]
                         ;; Must be a parseable IPv4 AND not a trusted
-                        ;; proxy. Non-IP strings (codex 7 / claude 3)
-                        ;; previously slipped through because
+                        ;; proxy. Non-IP strings previously slipped
+                        ;; through because
                         ;; `ip-in-cidrs?` returns nil for unparseable
                         ;; input, which `when-not` then treated as
                         ;; "not in trusted" → accepted as the client.
@@ -260,10 +260,10 @@
 
 (defn wrap-bootstrap-rate-limit
   "Refuse POST /v1/bootstrap requests from any single IP that exceed
-  `limit-per-minute` within the last `window-ms`. Hardcoded v1
-  mitigation for codex 4 / H4 — anyone can fire valid self-signed
-  bootstraps and write unbounded identity + pubkey + tuple rows
-  otherwise.
+  `limit-per-minute` within the last `window-ms`. Bootstrap is the
+  one endpoint where the request has no prior identity to charge
+  against — anyone can fire valid self-signed bootstraps and write
+  unbounded identity + pubkey + tuple rows otherwise.
 
   State shape (atom):  `{ip-string → {:count long :start-ms long}}`
   - `:start-ms` is the wall-clock at which the IP's window began.
