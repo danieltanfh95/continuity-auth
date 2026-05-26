@@ -40,7 +40,7 @@ High-level overview. For the conceptual model see `ontology.md`. For the wire pr
 │        lookup → signature verify → atomic nonce record      │
 │                                                             │
 │   Cluster classification (identity/merge.clj)               │
-│        LS-anchored attach OR new tuple in cluster           │
+│        pubkey-anchored attach OR new tuple in cluster       │
 │                                                             │
 │   Sliding-window-counter (ratelimit/window.clj)             │
 │        check + transact bucket                              │
@@ -57,12 +57,12 @@ High-level overview. For the conceptual model see `ontology.md`. For the wire pr
 
 | Axis | Epistemic status | Role |
 |---|---|---|
-| `ls-pubkey` | Cryptographic | The only merge gate |
+| `pubkey` | Cryptographic | The only merge gate |
 | `host-user-id` | Cryptographic-by-proxy (HMAC) | Cross-identity merge via cooling-off |
 | `ip` | Observed | Advisory only |
 | `fp-digest` | Claimed | Advisory only |
 
-This asymmetry is the heart of why continuity-auth resists poisoning attacks: an attacker who shares the victim's IP and fingerprint cannot enter the victim's cluster because they lack the LS private key. See `ontology.md §2` and `threat-model.md §T3`, `§T6`.
+This asymmetry is the heart of why continuity-auth resists poisoning attacks: an attacker who shares the victim's IP and fingerprint cannot enter the victim's cluster because they lack the victim's private key (regardless of substrate — browser non-extractable WebCrypto, CLI PEM, or hardware-anchored). See `ontology.md §2` and `threat-model.md §T3`, `§T6`.
 
 ### Single read snapshot per decision
 
@@ -124,7 +124,7 @@ Decisions that shaped the architecture and shouldn't be re-litigated without rea
 - **Async transact-after-response.** Decouples write latency from decision latency. Cost: bounded event loss on crash; acceptable for statistical event data.
 - **Strict `:db.unique/value` for nonces.** Upsert semantics (`:db.unique/identity`) would silently allow replays.
 - **Sliding-window-counter, not sliding-log.** O(1) per check; the approximation error is bounded and acceptable for opportunistic-abuse defense.
-- **No weak-attach in v1.** Cluster merge requires LS-key match or host-link attestation; no IP/fp-only continuity. Simpler, harder to poison.
+- **No weak-attach in v1.** Cluster merge requires pubkey match or host-link attestation; no IP/fp-only continuity. Simpler, harder to poison.
 - **ClojureScript-only client.** No hand-written JS facade. shadow-cljs `:target :npm-module` provides the JS distribution.
 
 ## Trade-offs accepted

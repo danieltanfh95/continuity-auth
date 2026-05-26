@@ -44,9 +44,9 @@
     "Indexed lookup: all tuples whose :tuple/fp-digest = fp-digest-bytes.
     Returns a seq of entity maps.")
 
-  (find-tuples-by-ls-pubkey
+  (find-tuples-by-pubkey
     [this snapshot pubkey-eid]
-    "Indexed lookup: all tuples whose :tuple/ls-pubkey = pubkey-eid.")
+    "Indexed lookup: all tuples whose :tuple/pubkey = pubkey-eid.")
 
   (find-buckets
     [this snapshot identity-eid window]

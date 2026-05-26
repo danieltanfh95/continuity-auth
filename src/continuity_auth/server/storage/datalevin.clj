@@ -37,14 +37,14 @@
 
 (def ^:private tuple-pull-attrs
   [:db/id :tuple/id :tuple/identity :tuple/ip
-   :tuple/fp-digest :tuple/ls-pubkey
+   :tuple/fp-digest :tuple/pubkey
    :tuple/first-seen :tuple/last-seen
    :tuple/observation-count])
 
 (defn- find-tuples-by-attr
   "Query for all tuples whose `attr` equals `value`, then pull the
   standard `tuple-pull-attrs` shape for each. Used by the three
-  `find-tuples-by-{ip,fp,ls-pubkey}` protocol methods, which differ
+  `find-tuples-by-{ip,fp,pubkey}` protocol methods, which differ
   only in the indexed attribute."
   [db attr value]
   (let [eids (d/q [:find '[?e ...]
@@ -90,8 +90,8 @@
   (find-tuples-by-fp [_ snap fp-bytes]
     (find-tuples-by-attr (to-db snap) :tuple/fp-digest fp-bytes))
 
-  (find-tuples-by-ls-pubkey [_ snap pubkey-eid]
-    (find-tuples-by-attr (to-db snap) :tuple/ls-pubkey pubkey-eid))
+  (find-tuples-by-pubkey [_ snap pubkey-eid]
+    (find-tuples-by-attr (to-db snap) :tuple/pubkey pubkey-eid))
 
   (find-buckets [_ snap identity-eid window]
     (let [db   (to-db snap)

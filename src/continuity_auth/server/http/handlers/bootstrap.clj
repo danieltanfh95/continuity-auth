@@ -1,5 +1,5 @@
 (ns continuity-auth.server.http.handlers.bootstrap
-  "POST /v1/bootstrap — first signed request from a fresh LS keypair.
+  "POST /v1/bootstrap — first signed request from a fresh keypair.
 
   Request body shape:
     {\"envelope\":  <wire-envelope, route-bound to POST /v1/bootstrap>,

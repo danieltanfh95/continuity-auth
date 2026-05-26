@@ -79,7 +79,7 @@
    {:db/valueType :db.type/bytes
     :db/index     true}
 
-   :tuple/ls-pubkey
+   :tuple/pubkey
    {:db/valueType :db.type/ref
     :db/index     true}
 
@@ -268,6 +268,6 @@
 (def trust-event-reasons
   "Valid values for :trust-event/reason. Extend when adding new score
   deltas; the merge and score namespaces must agree."
-  #{:ls-match :host-link-committed :ip-mismatch :fp-mismatch
+  #{:pubkey-match :host-link-committed :ip-mismatch :fp-mismatch
     :all-mismatch :anomaly :decay :erasure-requested :admin-reset
     :bootstrap :rotate-key :revoke-key :admin-revoke})

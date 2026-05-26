@@ -7,7 +7,7 @@ The conceptual model. Everything else (schema, merge algorithm, sliding window, 
 | Kind | What it is | Identity criterion | Owns its lifecycle? |
 |---|---|---|---|
 | `Identity` | A logical user cluster — the system's best guess at "the same actor". Not a person. | UUID `:identity/id` | Yes |
-| `Tuple` | An observed combination `(ip, fp-digest, ls-pubkey-ref)`. One tuple per distinct combination ever observed (not per request). | `(ip, fp-digest, ls-pubkey)` triple. Composite key. | No — bound to one identity |
+| `Tuple` | An observed combination `(ip, fp-digest, pubkey-ref)`. One tuple per distinct combination ever observed (not per request). | `(ip, fp-digest, pubkey)` triple. Composite key. | No — bound to one identity |
 | `Pubkey` | A registered public key (Ed25519 / P-256). | 32-byte SHA-256 thumbprint of the canonical pubkey bytes | No — bound to one identity |
 | `Request` | One observed `/verify` attempt. Audit/sliding-window data; never user-facing. | EID (or `nonce-hash` while live) | No — bound to one identity |
 | `TrustEvent` | An explicit modification to an identity's trust score (audit trail). | EID | No — bound to one identity |
@@ -16,7 +16,7 @@ The conceptual model. Everything else (schema, merge algorithm, sliding window, 
 | `Bucket` | Accounting unit for the sliding-window-counter algorithm. | `(identity, window-size, start)` | No — bound to one identity |
 | `EraseStub` | Audit trace of a GDPR erasure. Hashed identity-id only; no user data. | EID + `:erase-stub/identity-hash` | Self (long-lived) |
 
-A *Person* is not an entity in this system. We track clusters; clusters are evidence-based proxies for persons. Two clusters can refer to one person (post-erasure regeneration, multiple devices without host-link); one cluster can in principle refer to multiple people (shared device with shared LS storage). The system does not claim to identify persons.
+A *Person* is not an entity in this system. We track clusters; clusters are evidence-based proxies for persons. Two clusters can refer to one person (post-erasure regeneration, multiple devices without host-link); one cluster can in principle refer to multiple people (shared device with a shared keypair — browser profile shared across users, CLI `$CAUTH_HOME` shared across operators). The system does not claim to identify persons.
 
 ## 2. The four axes (and why they are not equivalent)
 
@@ -26,14 +26,14 @@ Each axis in the trust vector has different epistemic status. This asymmetry is 
 |---|---|---|---|---|
 | `ip` | TCP/IP connection (or trusted-proxy header) | Yes — via the network stack | Hard for the naive attacker; trivial with a VPN/proxy chain | **Observed** |
 | `fp-digest` | Client-computed; client claims it in the envelope | No — the server cannot independently compute the client's browser fingerprint | Trivial — any attacker can claim any digest | **Claimed** |
-| `ls-pubkey` | Client signs the envelope with the corresponding private key; pubkey thumbprint is in the envelope | Yes — by verifying the signature | Hard — requires private-key compromise via XSS or device access | **Cryptographic** |
+| `pubkey` | Client signs the envelope with the corresponding private key; pubkey thumbprint is in the envelope | Yes — by verifying the signature | Hard — requires private-key compromise via substrate-specific path (XSS for browser non-extractable WebCrypto, filesystem read for CLI PEM, physical device access for hardware-anchored) | **Cryptographic** |
 | `host-user-id` | Host backend attests the binding via HMAC over a server-to-server call | Yes — by verifying the HMAC | Requires host secret compromise | **Cryptographic-by-proxy** |
 
 Operational rule that falls out of this table:
 
 > **Only cryptographic / cryptographic-by-proxy axes can *gate* cluster entry. Observed and claimed axes can only *corroborate* (positive evidence within a cluster) or *flag* (mismatch within a cluster).**
 
-This is the formal version of "LS-match is the only trustworthy merge signal" from the plan. Concretely: a request arriving with a verified signature against a pubkey already attached to identity A is *known* to be from a holder of A's key. A request arriving with `ip` or `fp-digest` matching a tuple in identity A's cluster is merely *consistent with* such an actor — but a determined attacker can fabricate either.
+This is the formal version of "pubkey-match is the only trustworthy merge signal" from the plan. Concretely: a request arriving with a verified signature against a pubkey already attached to identity A is *known* to be from a holder of A's key. A request arriving with `ip` or `fp-digest` matching a tuple in identity A's cluster is merely *consistent with* such an actor — but a determined attacker can fabricate either.
 
 ## 3. Identity lifecycle
 
@@ -81,7 +81,7 @@ Notable:
 
 Tuples are append-only inside an identity's cluster. They have no retraction except via erasure. They are *not* re-bound to a different identity except via the host-link merge described in §8.
 
-A tuple's `:tuple/observation-count` and `:tuple/last-seen` are updated each time the same `(ip, fp, ls-pubkey)` combination is re-observed. No other axis can be updated.
+A tuple's `:tuple/observation-count` and `:tuple/last-seen` are updated each time the same `(ip, fp, pubkey)` combination is re-observed. No other axis can be updated.
 
 ## 6. Trust as a structured quantity
 
@@ -101,11 +101,11 @@ tier(score, host-linked?) =
 Score deltas:
 
 ```
-+0.05    LS-match within cluster (a verified signature against a known pubkey)
++0.05    pubkey-match within cluster (a verified signature against a known pubkey)
 +0.30    HostLink committed (after cooling-off)
 -0.02    IP mismatch within cluster
 -0.05    fp-digest mismatch within cluster
--0.10    Both ip+fp mismatch within cluster (new tuple, LS-only match)
+-0.10    Both ip+fp mismatch within cluster (new tuple, pubkey-only match)
 -0.05    Behavioral anomaly (regular-interval signaling, high concurrency)
 + decay  Toward 0.5 at 0.01/day with no activity
 ```
@@ -135,7 +135,7 @@ The cluster never grows across identities through `ip` or `fp-digest` alone. Cro
 > `POST /v1/link-account` is not wired as an HTTP handler in v0.1.0 — see
 > `docs/api.md` (planned, v1.1) and `docs/threat-model.md` T8/T14. Tier
 > uplift from anonymous → tracked in v0.1.0 happens via sustained
-> observation in the LS-anchored cluster (`score.clj`); the host-link path
+> observation in the pubkey-anchored cluster (`score.clj`); the host-link path
 > is purely additive.
 
 The intended-by-design way two identities would become one is via a host-link attestation that says "identity-A and identity-B both belong to host_user_id `X`". Operationally:
@@ -167,7 +167,7 @@ Anything else — score, tier, limits, response — is derived from this envelop
 
 This is structurally identical to pdsa's "challenge-response with a client-derived secret", but generalized:
 - pdsa: one secret, one identity, register-then-prove.
-- continuity-auth: one secret (LS key) + corroborating signals, an identity per LS key, no separate register step — the first signed envelope auto-registers.
+- continuity-auth: one secret (private key, substrate-specific) + corroborating signals, an identity per key, no separate register step — the first signed envelope auto-registers.
 
 ## 10. Invariants
 
@@ -177,7 +177,7 @@ This is structurally identical to pdsa's "challenge-response with a client-deriv
 | I2 | A tuple maps to exactly one identity. | `:tuple/identity` ref; transaction logic. |
 | I3 | An identity's score is always in `[0.0, 1.0]`. | Score-mutation transaction-fn clamps. |
 | I4 | A nonce hash is unique in the DB while live. | `:nonce/hash` is `:db.unique/identity`. |
-| I5 | A tuple cannot be created with an LS-pubkey-ref whose `:pubkey/revoked-at` is set. | Verify step rejects revoked-key envelopes upstream of tuple creation. |
+| I5 | A tuple cannot be created with a pubkey-ref whose `:pubkey/revoked-at` is set. | Verify step rejects revoked-key envelopes upstream of tuple creation. |
 | I6 | Two distinct identities never share a pubkey thumbprint. | I1; merge logic in §8. |
 | I7 | A `HostLink` in `:pending` state does not cause a cross-identity merge. | §8 step 3 is gated on `cool-until` elapsed AND no admin abort. |
 | I8 | At most 2 buckets per `(identity, window-size)` at any time. | Bucket allocator in `ratelimit/window.clj`. |
@@ -226,8 +226,8 @@ These are deliberate omissions from the ontology:
 
 ## 14. Glossary
 
-- **axis** — one named component of the trust vector (`ip`, `fp-digest`, `ls-pubkey`, `host-user-id`).
-- **bootstrap** — the first signed request from a new LS key; creates an identity at anonymous tier.
+- **axis** — one named component of the trust vector (`ip`, `fp-digest`, `pubkey`, `host-user-id`).
+- **bootstrap** — the first signed request from a new keypair; creates an identity at anonymous tier.
 - **claimed** — epistemic status of a signal whose value the server takes at face value from the client.
 - **cluster** — a synonym for an identity's set of attached tuples.
 - **cool-until** — the timestamp before which a pending host-link merge cannot commit.
@@ -236,9 +236,9 @@ These are deliberate omissions from the ontology:
 - **envelope** — the signed payload sent with every request to continuity-auth.
 - **identity** — a logical user cluster; the system's unit of trust accounting.
 - **key-id** — 32-byte SHA-256 thumbprint of a pubkey's canonical bytes.
-- **LS-match** — the case in which an envelope's `key-id` resolves to a pubkey already attached to an identity.
+- **pubkey-match** — the case in which an envelope's `key-id` resolves to a pubkey already attached to an identity. (Formerly "LS-match", from the browser-localStorage era; renamed because the substrate-prefix embedded an assumption the protocol no longer relies on — see [`docs/non-browser-clients.md`](non-browser-clients.md).)
 - **observed** — epistemic status of a signal the server reads from out-of-band machinery (TCP/IP, clock).
 - **tier** — the discrete projection of trust score plus host-link state; determines rate limits.
-- **tuple** — an `(ip, fp-digest, ls-pubkey-ref)` combination observed once or more.
+- **tuple** — an `(ip, fp-digest, pubkey-ref)` combination observed once or more.
 - **verify (endpoint)** — `POST /v1/verify`; the main path. Returns a rate-limit decision.
 - **verify (cryptographic)** — the operation of checking a signature against a pubkey.

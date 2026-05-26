@@ -28,10 +28,10 @@
 
 (deftest delta-for-reasons-default
   (let [d score/default-deltas]
-    (is (close? 0.05  (score/delta-for-reasons d [:ls-match])))
-    (is (close? 0.03  (score/delta-for-reasons d [:ls-match :ip-mismatch])))
+    (is (close? 0.05  (score/delta-for-reasons d [:pubkey-match])))
+    (is (close? 0.03  (score/delta-for-reasons d [:pubkey-match :ip-mismatch])))
     (is (close? -0.05 (score/delta-for-reasons d [:fp-mismatch])))
-    (is (close? -0.05 (score/delta-for-reasons d [:ls-match :all-mismatch])))))
+    (is (close? -0.05 (score/delta-for-reasons d [:pubkey-match :all-mismatch])))))
 
 (deftest decay-toward-neutral
   (testing "decay moves below-neutral score up"

@@ -141,9 +141,9 @@
 (defn make-revoke-key-handler
   "POST /v1/admin/revoke-key. Body: {\"key_id\": <b64url thumbprint>}.
 
-  Force-revokes the pubkey at `now`. Does NOT require an LS-signed
-  envelope from the user — this is the ops escape hatch for compromised
-  keys where the user can no longer (or won't) sign a revoke envelope."
+  Force-revokes the pubkey at `now`. Does NOT require a user-signed
+  envelope — this is the ops escape hatch for compromised keys where
+  the user can no longer (or won't) sign a revoke envelope."
   [{:keys [store clock keystore tolerance-seconds nonce-ttl-seconds]}]
   (fn [request]
     (let [now (clock)

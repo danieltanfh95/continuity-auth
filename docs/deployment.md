@@ -132,4 +132,4 @@ SIGTERM is the standard signal. Allow ≥ 15 s for graceful drain before SIGKILL
 
 - HA cluster failover is documented but not yet exercised in production by anyone other than the author. Plan a chaos test in your environment.
 - The trace exporter is OTLP; if your stack uses a different transport (Jaeger HTTP, Zipkin), wrap or replace `observability/tracing.clj` (not yet implemented as of this writing — task #14 partial).
-- The host-link path is specified but not yet implemented (task #16 pending). v1.0 ships without tier uplift via account; tier uplift via sustained LS-anchored history works.
+- The host-link path is specified but not yet implemented (task #16 pending). v1.0 ships without tier uplift via account; tier uplift via sustained pubkey-anchored history works.

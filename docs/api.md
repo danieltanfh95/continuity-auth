@@ -95,7 +95,7 @@ Main rate-limit decision path. The host backend calls this for every request it 
 
 ### `POST /v1/rotate-key`
 
-Replace the LS keypair. Envelope signed with the OLD key carries the user's intent; the request body adds the new pubkey bytes and alg.
+Replace the identity's signing keypair. Envelope signed with the OLD key carries the user's intent; the request body adds the new pubkey bytes and alg.
 
 **Request body:**
 
@@ -160,7 +160,7 @@ Host-to-server attestation: `(host_user_id, identity_ref)` bound. HMAC over the 
 
 ### `DELETE /v1/identity/{id}` *(planned, v1.1)*
 
-GDPR right-to-erasure. Requires both host HMAC and a signed envelope from the identity's LS key.
+GDPR right-to-erasure. Requires both host HMAC and a signed envelope from the identity's signing key.
 
 ### `GET /healthz`
 Liveness. Returns 200 `{ "ok": true }` once the process is accepting requests.

@@ -80,7 +80,7 @@
         (is (= 2 n))))))
 
 (deftest bootstrap-with-same-ip-still-separate-identities
-  (testing "ontology §7: bootstrap never merges across IP/fp — only LS-anchored merges"
+  (testing "ontology §7: bootstrap never merges across IP/fp — only pubkey-anchored merges"
     (with-store
       (fn [store]
         (let [shared-ip "203.0.113.1"
@@ -227,10 +227,10 @@
         trust-event     (first (filter :trust-event/identity tx))]
     (is (> (:identity/score identity-update) 0.5)
         "exact observation reinforces score")
-    (is (= :ls-match (:trust-event/reason trust-event)))))
+    (is (= :pubkey-match (:trust-event/reason trust-event)))))
 
 (deftest classification-tx-new-tuple-ip-only-net-positive
-  (testing "LS-match (+0.05) dominates single-axis IP-mismatch (-0.02) — net positive"
+  (testing "pubkey-match (+0.05) dominates single-axis IP-mismatch (-0.02) — net positive"
     (let [classification {:kind          :new-tuple
                           :identity-eid  42
                           :existing-tuple nil
@@ -244,12 +244,12 @@
           identity-update (first (filter #(= 42 (:db/id %)) tx))]
       (is (some? tuple-create))
       (is (= 42 (:tuple/identity tuple-create)))
-      (is (= 7  (:tuple/ls-pubkey tuple-create)))
+      (is (= 7  (:tuple/pubkey tuple-create)))
       (is (> (:identity/score identity-update) 0.5)
-          "single-axis IP-mismatch with LS-match is still net positive (legit roaming user)"))))
+          "single-axis IP-mismatch with pubkey-match is still net positive (legit roaming user)"))))
 
 (deftest classification-tx-new-tuple-all-mismatch-net-negative
-  (testing "All-axis mismatch (-0.10) overcomes LS-match (+0.05) — net negative"
+  (testing "All-axis mismatch (-0.10) overcomes pubkey-match (+0.05) — net negative"
     (let [classification {:kind          :new-tuple
                           :identity-eid  42
                           :existing-tuple nil

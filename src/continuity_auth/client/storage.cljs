@@ -1,5 +1,5 @@
 (ns continuity-auth.client.storage
-  "Browser-side storage for the LS keypair handle and key metadata.
+  "Browser-side storage for the keypair handle and key metadata.
 
   Storage policy:
     - IndexedDB holds the actual CryptoKey objects (private and public).

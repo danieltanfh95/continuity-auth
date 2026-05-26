@@ -80,7 +80,7 @@
       :tuple/identity           -1
       :tuple/ip                 (:ip incoming)
       :tuple/fp-digest          (:fp-digest incoming)
-      :tuple/ls-pubkey          -2
+      :tuple/pubkey             -2
       :tuple/first-seen         d
       :tuple/last-seen          d
       :tuple/observation-count  1}
@@ -102,7 +102,7 @@
   [store snap identity-eid]
   (storage/q store snap
              '[:find [(pull ?t [:db/id :tuple/id :tuple/ip
-                                 :tuple/fp-digest :tuple/ls-pubkey
+                                 :tuple/fp-digest :tuple/pubkey
                                  :tuple/first-seen :tuple/last-seen
                                  :tuple/observation-count]) ...]
                :in $ ?ident
@@ -133,15 +133,15 @@
              [fp-digest identity-eid]))
 
 (defn- exact-tuple-match
-  "Find a tuple in `cluster-tuples` with the same (ip, fp-digest, ls-pubkey)
+  "Find a tuple in `cluster-tuples` with the same (ip, fp-digest, pubkey)
   as `incoming` + `pubkey-eid`. Returns the tuple or nil."
   [incoming pubkey-eid cluster-tuples]
   (let [ip  (:ip incoming)
         fp  ^bytes (:fp-digest incoming)]
     (some (fn [t]
             (when (and (= ip (:tuple/ip t))
-                       (= pubkey-eid (or (:db/id (:tuple/ls-pubkey t))
-                                         (:tuple/ls-pubkey t)))
+                       (= pubkey-eid (or (:db/id (:tuple/pubkey t))
+                                         (:tuple/pubkey t)))
                        (java.security.MessageDigest/isEqual
                         fp ^bytes (:tuple/fp-digest t)))
               t))
@@ -225,8 +225,8 @@
   [classification]
   (let [{:keys [kind mismatch-axes cross-cluster]} classification
         base (case kind
-               :exact-observation #{:ls-match :ip-match :fp-match}
-               :new-tuple        (-> #{:ls-match}
+               :exact-observation #{:pubkey-match :ip-match :fp-match}
+               :new-tuple        (-> #{:pubkey-match}
                                      (cond->
                                       (not (contains? mismatch-axes :ip)) (conj :ip-match)
                                       (not (contains? mismatch-axes :fp)) (conj :fp-match)
@@ -253,8 +253,8 @@
                 pubkey-eid]} classification
         d            (->date now)
         reasons      (case kind
-                       :exact-observation [:ls-match]
-                       :new-tuple        (into [:ls-match]
+                       :exact-observation [:pubkey-match]
+                       :new-tuple        (into [:pubkey-match]
                                                 (score/axis-mismatch->reasons
                                                  mismatch-axes)))
         delta        (score/delta-for-reasons deltas reasons)
@@ -288,7 +288,7 @@
                 :tuple/identity          identity-eid
                 :tuple/ip                (:ip incoming)
                 :tuple/fp-digest         (:fp-digest incoming)
-                :tuple/ls-pubkey         pubkey-eid
+                :tuple/pubkey            pubkey-eid
                 :tuple/first-seen        d
                 :tuple/last-seen         d
                 :tuple/observation-count 1}

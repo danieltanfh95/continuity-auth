@@ -1,11 +1,19 @@
-# Non-browser clients
+# Client substrates (browser, CLI, daemon, …)
 
-continuity-auth's wire protocol is implementable by any client that can
-hold a private key and produce length-prefixed bytes. That includes
-`curl` + `openssl` from a shell, a Python script, a Go daemon, a
-mobile app using the platform keystore, or — at the limit — a busybox
-container. This document explains how, and why this is structurally
-different from proof-of-work gates like Anubis.
+> Doc filename remains `non-browser-clients.md` for URL stability; the
+> framing inside is substrate-neutral.
+
+continuity-auth is a substrate-neutral mechanism. Any caller that holds
+a private key persistently and can emit length-prefixed canonical bytes
+participates as a first-class client of the same protocol — the browser
+(non-extractable WebCrypto + IndexedDB) is one substrate, the CLI (PEM
+on filesystem + openssl) is another, and hardware-anchored substrates
+(TPM, Secure Enclave, Android Keystore, iOS Keychain — v1.1+) are
+more. They differ in *threat model*, not in *protocol*.
+
+This document covers the non-browser substrates: how they implement the
+wire protocol byte-for-byte, what their threat model looks like, and how
+they compare structurally with proof-of-work gates like Anubis.
 
 ## Why this matters
 

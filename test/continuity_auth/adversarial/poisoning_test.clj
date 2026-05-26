@@ -100,9 +100,9 @@
           (is (not= vid aid)
               "shared fingerprint digest must NOT cause cluster merge"))))))
 
-(deftest ^:adversarial combined-ip-fp-collision-without-ls-key-does-not-merge
+(deftest ^:adversarial combined-ip-fp-collision-without-pubkey-does-not-merge
   (testing "Even with both IP and fp matching, an attacker without the
-            victim's LS key creates a separate cluster"
+            victim's signing key creates a separate cluster"
     (with-store
       (fn [store]
         (let [victim-ip "10.0.0.42"
@@ -113,7 +113,7 @@
               vid       (identity-of-pubkey store snap (:pid victim))
               aid       (identity-of-pubkey store snap (:pid attacker))]
           (is (not= vid aid)
-              "ip+fp match without LS-key match must NOT merge clusters")
+              "ip+fp match without pubkey match must NOT merge clusters")
           (is (= 1 (count-tuples-in-identity store snap vid))
               "victim cluster unaffected")
           (is (= 1 (count-tuples-in-identity store snap aid))
@@ -129,7 +129,7 @@
               attacker  (bootstrap! store "5.6.7.8" (rand-bytes 32))
               snap      (storage/snapshot store)
               pubkey    (storage/find-pubkey-by-thumbprint store snap (:pid attacker))
-              ;; Attacker /verify with their own LS key, but claiming
+              ;; Attacker /verify with their own signing key, but claiming
               ;; the victim's fingerprint.
               result    (merge/classify store snap
                                          {:ip "5.6.7.8" :fp-digest shared-fp}

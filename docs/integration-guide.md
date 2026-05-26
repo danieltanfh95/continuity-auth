@@ -11,22 +11,25 @@ The contract:
 ## Architecture
 
 ```
-                Browser                 Host backend              continuity-auth
-                ┌────────────┐         ┌──────────────┐          ┌──────────────────┐
-                │  Host UI   │         │              │          │                  │
-                │            │         │  /api/...    │  ──S2S─→ │  POST /v1/verify │
-                │  + client  │ ──HTTP→ │  handler     │          │  (sig verified,  │
-                │  (signs)   │         │  + enforce   │ ←────── │   tier decision) │
-                └────────────┘         └──────────────┘          └──────────────────┘
+       Client (any substrate)            Host backend             continuity-auth
+       ┌──────────────────────┐         ┌──────────────┐         ┌──────────────────┐
+       │ Browser (WebCrypto + │         │              │         │                  │
+       │   IndexedDB)         │         │  /api/...    │ ──S2S─→ │  POST /v1/verify │
+       │ CLI (PEM + openssl)  │ ──HTTP→ │  handler     │         │  (sig verified,  │
+       │ daemon / mobile      │         │  + enforce   │ ←────── │   tier decision) │
+       └──────────────────────┘         └──────────────┘         └──────────────────┘
 ```
 
-1. The host frontend includes the `@continuity-auth/client` library (npm) or `org.continuity-auth/client` (Clojars).
-2. The library generates a non-extractable Ed25519 (or P-256) keypair on first visit, stores the handle in IndexedDB.
-3. For every outgoing request the host wants to rate-limit, the library signs an envelope and attaches it to the request body as `envelope`.
-4. The host's backend forwards the `envelope` to `POST /v1/verify` (S2S, over HTTPS).
-5. continuity-auth returns a decision; the host backend enforces it.
+continuity-auth is **substrate-neutral**: any client that holds a private key and can emit length-prefixed canonical bytes is a first-class caller. The browser is one substrate, the CLI / daemon is another, hardware-anchored callers (TPM / Secure Enclave / Keystore) are a v1.1+ direction. All three speak the same wire protocol.
 
-## Frontend integration
+The integration flow:
+
+1. The client (any substrate) holds a private key — generated once at first contact and persisted in a substrate-natural store (browser: non-extractable IndexedDB handle; CLI: filesystem PEM at `$CAUTH_HOME/key.pem`).
+2. For every outgoing request the host wants to rate-limit, the client signs an envelope over the canonical bytes (see [`docs/crypto-protocol.md`](crypto-protocol.md)).
+3. The host's backend forwards the `envelope` to `POST /v1/verify` (server-to-server, over HTTPS).
+4. continuity-auth returns a decision (`ok`, `tier`, `retry_after_ms`); the host backend enforces it.
+
+## Frontend integration (browser substrate)
 
 ```clojure
 ;; ClojureScript host:
@@ -58,6 +61,50 @@ await fetch("/api/foo", signedRequest);
 
 The frontend library NEVER sets cookies, never reads or modifies the host's session storage.
 
+## CLI / daemon integration (CLI substrate)
+
+For non-browser callers — a shell script, a daemon, a mobile app, a long-running batch job — there are two ways to participate:
+
+```bash
+# Ergonomic: the unified `continuity` CLI (babashka-based).
+continuity auth init                     # generates key + bootstraps identity
+continuity auth curl -X POST \
+  -d '{"thing": 1}' \
+  https://app.example.com/api/thing      # wraps curl with X-Continuity-Envelope
+```
+
+```bash
+# Bytes-for-bytes reference: a POSIX shell script using only openssl + curl + jq.
+CAUTH_ENDPOINT=https://fl.example.com ./scripts/cauth-curl-example.sh
+```
+
+The CLI substrate stores the keypair as `$CAUTH_HOME/key.pem` (PEM/PKCS8, openssl-compatible) and the identity record as `$CAUTH_HOME/identity.edn`. The wire bytes are identical to the browser path — see [`docs/crypto-protocol.md`](crypto-protocol.md) and [`docs/non-browser-clients.md`](non-browser-clients.md).
+
+Operator guidance for filesystem-resident keys: `chmod 700 $CAUTH_HOME`; treat the key like any long-lived API credential; rotate via `continuity admin revoke-key` + `continuity auth init` if compromise is suspected. The threat-model coverage is in [`docs/threat-model.md`](threat-model.md) T1 (CLI substrate row).
+
+## What about non-engaging callers?
+
+continuity-auth provides a trust signal only for callers that engage with the protocol. The README defines four levels of engagement (no envelope / bootstrap-only / sustained / host-linked). Level-0 callers — requests with no envelope at all — bypass continuity-auth entirely; the host's per-IP layer (or whatever else is configured) is what catches them. continuity-auth does not impose a host-side fallback contract; composition is the host's choice.
+
+A practical layering that works:
+
+```
+host-side defense pyramid:
+
+  ┌─────────────────────────┐
+  │  CAPTCHA (top)          │  ← invoked only for level-1+ callers flagged
+  │  - genuinely suspicious │     as anomalous by continuity-auth, or for
+  └─────────────────────────┘     level-0 callers on high-value endpoints
+  ┌─────────────────────────┐
+  │  continuity-auth        │  ← level-1+ callers; trust gradient
+  │  - tier-based limits    │     by accumulated observation
+  └─────────────────────────┘
+  ┌─────────────────────────┐
+  │  per-IP limits (bottom) │  ← level-0 callers and the absolute floor
+  │  - cheap, broad         │     for everyone
+  └─────────────────────────┘
+```
+
 ## Backend integration
 
 For each request that arrives with a continuity-auth envelope:
@@ -86,7 +133,7 @@ host-backend handler (pseudo):
 
 If the host already has its own rate limiter (e.g. per-IP, per-route), it can:
 
-- Use continuity-auth as the **outer** limiter — more sophisticated, includes fingerprint and LS-key continuity. Recommended.
+- Use continuity-auth as the **outer** limiter — more sophisticated, includes fingerprint and signing-key continuity. Recommended.
 - Disable the host's IP-based limiter on routes covered by continuity-auth.
 
 Or keep both stacked. continuity-auth makes the tiering decision; the host's per-route limiter can still narrow further on specific high-value endpoints.

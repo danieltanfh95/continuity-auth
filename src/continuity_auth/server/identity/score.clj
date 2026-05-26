@@ -12,7 +12,7 @@
 (def default-deltas
   "Default magnitudes for each kind of trust event. Negative magnitudes
   reduce trust; positive magnitudes increase it."
-  {:ls-match               +0.05
+  {:pubkey-match           +0.05
    :host-link-committed    +0.30
    :ip-mismatch            -0.02
    :fp-mismatch            -0.05
@@ -76,7 +76,7 @@
 
 (defn classify-axis-match
   "Classify the relationship between an incoming tuple and the closest
-  existing tuple in the same LS-anchored cluster.
+  existing tuple in the same pubkey-anchored cluster.
 
   Returns a map:
     :exact?         — true iff incoming.ip = existing.ip AND
@@ -88,8 +88,9 @@
   tuple for an existing pubkey is a strong signal, e.g., the user moved
   device or network).
 
-  This function does not consider :ls — the LS axis is always 'matched'
-  in the verify path (otherwise we would not be on the verify path)."
+  This function does not consider :pubkey — the pubkey axis is always
+  'matched' in the verify path (otherwise we would not be on the verify
+  path)."
   [incoming closest]
   (let [ip-same? (= (:ip incoming)        (:tuple/ip closest))
         fp-same? (java.security.MessageDigest/isEqual

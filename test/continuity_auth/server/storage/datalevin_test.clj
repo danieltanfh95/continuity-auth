@@ -111,7 +111,7 @@
            :tuple/identity                 -1
            :tuple/ip                       "192.0.2.1"
            :tuple/fp-digest                fpd
-           :tuple/ls-pubkey                -2
+           :tuple/pubkey                   -2
            :tuple/first-seen               n0
            :tuple/last-seen                n0
            :tuple/observation-count        1}])

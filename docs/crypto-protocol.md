@@ -68,7 +68,11 @@ For requests with no body (e.g. `GET`), `body_sha256 = SHA-256(empty_string)` =
 fp_digest = SHA-256(canonical_fingerprint_signals)
 ```
 
-Where `canonical_fingerprint_signals` is the concatenation of, in fixed order:
+`fp-digest` is a 32-byte SHA-256 of a substrate-chosen, substrate-stable signal bundle. The protocol accepts any 32-byte value (the digest is treated as a **claimed** signal — see `ontology.md §2` — and never gates merges), but a caller that emits a *stable* digest across calls earns the corroborating-signal benefit when the (ip, fp-digest, pubkey) tuple recurs.
+
+### Browser substrate (canonical)
+
+For the browser substrate, `canonical_fingerprint_signals` is the concatenation of, in fixed order:
 
 1. UTF-8 of `navigator.userAgent`
 2. UTF-8 of `screen.width "x" screen.height "x" screen.colorDepth`
@@ -80,7 +84,15 @@ Where `canonical_fingerprint_signals` is the concatenation of, in fixed order:
 8. SHA-256 of 100ms of AudioContext output for a fixed oscillator
 9. UTF-8 of font-probe widths, joined by `,`
 
-Each signal is preceded by its UTF-8 name and a `:` separator, then `\n`-terminated. The client library is the authoritative implementation (`src/continuity_auth/client/fingerprint.cljs`).
+Each signal is preceded by its UTF-8 name and a `:` separator, then `\n`-terminated. The browser client library is the authoritative implementation (`src/continuity_auth/client/fingerprint.cljs`).
+
+### CLI substrate (current, unprincipled)
+
+The current `bin/continuity auth init` (see `src/continuity_auth/client/cli.clj` `cmd-init`) emits 32 random bytes at bootstrap and persists them to `$CAUTH_HOME/identity.edn`. This is **functionally correct** (the digest stays stable across subsequent verifies, so the tuple-recurrence path works) but **structurally unprincipled** (the digest carries no machine-identifying information, so an operator who copies `$CAUTH_HOME` across two machines presents the same fp-digest from both — losing the ip-mismatch signal). A v1.1 follow-on derives the CLI bundle from machine-stable signals (hostname, OS, arch, machine-id where available); the wire format does not change.
+
+### Other substrates
+
+Hardware-anchored substrates (TPM, Secure Enclave, Android Keystore, iOS Keychain) MAY derive the bundle from substrate-natural attestation properties. Substrate authors choose their canonical bundle; the protocol cares only about the 32-byte output.
 
 ## Replay protection parameters
 
