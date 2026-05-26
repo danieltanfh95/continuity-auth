@@ -41,3 +41,4 @@ dist/
 # Local agent / editor state (not project source)
 .claude/
 .succession/
+.plans/

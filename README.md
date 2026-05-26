@@ -200,7 +200,6 @@ docs/style/                  imported Clojure / correctness-framing conventions
 bin/                         continuity CLI (auth + admin subcommands)
 resources/                   aero config, logback
 scripts/check-bundle-size.mjs   CI gate on the gzipped bundle
-.plans/                      implementation plan (current + archive/)
 ```
 
 ## Common tasks (via [`just`](https://github.com/casey/just))

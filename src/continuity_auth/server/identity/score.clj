@@ -6,8 +6,8 @@
   is applied lazily (on read) by the tier projector — this namespace
   only produces deltas for discrete events.
 
-  Defaults match the table in `.plans/...md §D` and the ontology §6.
-  They are configurable at startup via the :scoring map in config.edn.")
+  Defaults match the table in `docs/ontology.md` §6. They are
+  configurable at startup via the :scoring map in config.edn.")
 
 (def default-deltas
   "Default magnitudes for each kind of trust event. Negative magnitudes
