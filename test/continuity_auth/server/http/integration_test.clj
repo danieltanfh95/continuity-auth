@@ -145,6 +145,10 @@
                                          :banned    {:1m 0  :5m 0   :1d 1}}}
                   {:trusted-cidrs []
                    :ip-header     "x-forwarded-for"
+                   ;; Fixed test key so the ingress hashing is deterministic
+                   ;; but never written to disk. Production loads from
+                   ;; the IP-HMAC keystore component.
+                   :ip-hmac-key   (byte-array 32 (byte 0x42))
                    ;; Integration tests fire many bootstraps back-to-back from
                    ;; one localhost IP. Disable per-IP exp-backoff (floor=0,
                    ;; cap=0 ⇒ penalty=0) so the middleware is a no-op here;
@@ -417,6 +421,7 @@
                   :tier-limits        {:anonymous {:1m 5}}}
                  {:trusted-cidrs  []
                   :ip-header      "x-forwarded-for"
+                  :ip-hmac-key    (byte-array 32 (byte 0x42))
                   :max-body-bytes 128
                   :bootstrap-rl   {:floor-ms 0 :cap-ms 0
                                    :doubling-factor 1 :reset-threshold-ms 0}})

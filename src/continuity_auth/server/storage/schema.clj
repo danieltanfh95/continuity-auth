@@ -28,8 +28,15 @@
   boundary each created their own bucket and the counter fragmented across
   them. With `:bucket/key` set to `\"<identity-eid>|<window>|<start-ms>\"`
   and `:db.unique/identity`, all writes to the same slot upsert into a
-  single entity."
-  2)
+  single entity.
+
+  v3 (2026-05-26): rename `:tuple/ip` → `:tuple/ip-hash`. The stored
+  value is now HMAC-SHA256(client-ip) under a server-side keystore
+  secret, hex-encoded. Equality is preserved (same IP under a fixed key
+  → same hash), so cluster grouping is unchanged; only the
+  representation-at-rest is pseudonymous. See
+  `continuity-auth.server.crypto.ip-hmac` for the keystore."
+  3)
 
 (def schema
   "Datalevin attribute schema, one entry per attribute. The schema is
@@ -71,7 +78,11 @@
    {:db/valueType :db.type/ref
     :db/index     true}
 
-   :tuple/ip
+   ;; `:tuple/ip-hash` is HMAC-SHA256(client-ip) hex-encoded, under the
+   ;; server's IP-HMAC keystore (see `continuity-auth.server.crypto.ip-hmac`).
+   ;; Equality is preserved (same IP under a fixed key → same hash), so
+   ;; cluster grouping is unchanged. The raw IP is never persisted.
+   :tuple/ip-hash
    {:db/valueType :db.type/string
     :db/index     true}
 

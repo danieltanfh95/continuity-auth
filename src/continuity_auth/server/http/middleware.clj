@@ -10,6 +10,7 @@
     wrap-trusted-proxy-ip  ← sets :cauth/client-ip from trusted header"
   (:require
    [clojure.string :as str]
+   [continuity-auth.server.crypto.ip-hmac :as ip-hmac]
    [continuity-auth.server.http.errors :as errors]
    [continuity-auth.server.storage.protocol :as storage]
    [jsonista.core :as json]))
@@ -249,13 +250,28 @@
             remote)))))
 
 (defn wrap-trusted-proxy-ip
-  "Attach `:cauth/client-ip` to the request. Configuration:
+  "Attach `:cauth/client-ip` (the HMAC of the raw IP, hex-encoded) and
+  `:cauth/client-ip-raw` (the plaintext IP) to the request. The raw IP
+  is exposed transiently for the in-process CIDR check in
+  `wrap-bootstrap-rate-limit`; it MUST NOT be logged or persisted.
+  Downstream handlers read only `:cauth/client-ip`.
+
+  Configuration:
      :trusted-cidrs — coll of [lo hi] ranges (see `parse-trusted-cidrs`)
-     :ip-header     — the header to consult, e.g. \"x-forwarded-for\""
-  [handler {:keys [trusted-cidrs ip-header] :or {ip-header "x-forwarded-for"}}]
+     :ip-header     — the header to consult, e.g. \"x-forwarded-for\"
+     :ip-hmac-key   — 32-byte server-side secret (see
+                      `continuity-auth.server.crypto.ip-hmac`)"
+  [handler {:keys [trusted-cidrs ip-header ip-hmac-key]
+            :or {ip-header "x-forwarded-for"}}]
+  (when-not ip-hmac-key
+    (throw (ex-info "wrap-trusted-proxy-ip: missing :ip-hmac-key" {})))
   (fn [request]
-    (let [ip (extract-client-ip request trusted-cidrs ip-header)]
-      (handler (assoc request :cauth/client-ip ip)))))
+    (let [ip (extract-client-ip request trusted-cidrs ip-header)
+          ip-hash (when (and (string? ip) (not (str/blank? ip)))
+                    (ip-hmac/hmac-ip-hex ip-hmac-key ip))]
+      (handler (assoc request
+                      :cauth/client-ip ip-hash
+                      :cauth/client-ip-raw ip)))))
 
 ;; -- bootstrap rate limit --------------------------------------------------
 ;;
@@ -395,12 +411,17 @@
 (defn make-suspicion-fn
   "Build a per-IP suspicion-multiplier function for `wrap-bootstrap-rate-limit`.
 
-  Returns `(fn [ip now-ms] → double)` that:
-    1. Looks up cached signals for `ip` (TTL = `:cache-ttl-ms`).
-    2. On cache miss + `:storage` present, runs an indexed read with
-       `:read-timeout-ms`; success → cache + use; failure → fall back to
-       neutral signals (the multiplier still includes the CIDR check).
-    3. Composes signals + CIDR membership via `bootstrap-suspicion-multiplier`.
+  Returns `(fn [ip-hash raw-ip now-ms] → double)` that:
+    1. Looks up cached signals for `ip-hash` (TTL = `:cache-ttl-ms`).
+       `ip-hash` is the opaque HMAC token — same as the cache key,
+       same as `:tuple/ip-hash` in storage.
+    2. On cache miss + `:storage` present, runs an indexed read keyed
+       on `ip-hash` with `:read-timeout-ms`; success → cache + use;
+       failure → fall back to neutral signals (the multiplier still
+       includes the CIDR check).
+    3. Composes signals + CIDR membership via
+       `bootstrap-suspicion-multiplier`. The CIDR membership test
+       uses `raw-ip` because the CIDR ranges are over plaintext IPs.
 
   Options:
     :storage          Storage protocol instance (nil → signals disabled)
@@ -422,11 +443,12 @@
         ttl     (long cache-ttl-ms)
         timeout (long read-timeout-ms)
         cache   (atom {})]
-    (fn suspicion-fn [^String ip ^long now-ms]
-      (let [dch? (boolean (ip-in-cidrs? ip datacenter-cidrs))
-            base (when (and enabled? storage ip)
-                   (or (read-cached-signal @cache ip now-ms ttl)
-                       (fetch-signal! cache storage ip now-ms timeout on-fallback)))
+    (fn suspicion-fn [^String ip-hash ^String raw-ip ^long now-ms]
+      (let [dch? (boolean (ip-in-cidrs? raw-ip datacenter-cidrs))
+            base (when (and enabled? storage ip-hash)
+                   (or (read-cached-signal @cache ip-hash now-ms ttl)
+                       (fetch-signal! cache storage ip-hash now-ms
+                                      timeout on-fallback)))
             sig  (assoc (or base {:ip-age-seconds nil :identity-count nil})
                         :datacenter-hit? dch?)]
         (bootstrap-suspicion-multiplier sig)))))
@@ -484,9 +506,12 @@
     :doubling-factor     penalty multiplier per consecutive   2
     :reset-threshold-ms  quiet-time → :consecutive resets     300000
     :now-fn              clock injection (no-arg → ms)        #(System/currentTimeMillis)
-    :suspicion-fn        (fn [ip now-ms] → double) — Tier 2/3 multiplier
-                          composed by `make-suspicion-fn`. Default
-                          `(constantly 1.0)` ⇒ pure Tier 1 staircase.
+    :suspicion-fn        (fn [ip-hash raw-ip now-ms] → double) — Tier 2/3
+                          multiplier composed by `make-suspicion-fn`. The
+                          hash keys storage lookups; the raw IP is used
+                          for the datacenter-CIDR membership test.
+                          Default `(constantly 1.0)` ⇒ pure Tier 1
+                          staircase.
 
   Rejects with 429 / `E_RATE` and a `Retry-After` header carrying the
   actual remaining milliseconds (ceiling-divided to seconds) BEFORE any
@@ -499,7 +524,7 @@
                    doubling-factor    2
                    reset-threshold-ms 300000
                    now-fn             #(System/currentTimeMillis)
-                   suspicion-fn       (constantly 1.0)}}]
+                   suspicion-fn       (fn [_ _ _] 1.0)}}]
   (let [base-opts {:floor-ms           (long floor-ms)
                    :cap-ms             (long cap-ms)
                    :doubling-factor    (long doubling-factor)
@@ -509,11 +534,14 @@
     (fn [request]
       (if (and (= :post (:request-method request))
                (= path (:uri request)))
-        (let [ip          (or (:cauth/client-ip request)
+        (let [ip-hash     (or (:cauth/client-ip request)
                               (:remote-addr request)
                               "unknown")
+              raw-ip      (or (:cauth/client-ip-raw request)
+                              (:remote-addr request))
+              ip          ip-hash
               now-ms      (long (now-fn))
-              mult        (try (double (suspicion-fn ip now-ms))
+              mult        (try (double (suspicion-fn ip-hash raw-ip now-ms))
                                (catch Throwable _ 1.0))
               opts        (assoc base-opts :suspicion mult)
               [old _new]  (swap-vals!

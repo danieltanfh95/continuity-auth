@@ -53,7 +53,7 @@
 
 (deftest axes-vs-cluster-exact-match-found
   (let [fp (byte-array (range 32))
-        t  {:db/id 1 :tuple/ip "1.1.1.1" :tuple/fp-digest fp
+        t  {:db/id 1 :tuple/ip-hash "1.1.1.1" :tuple/fp-digest fp
             :tuple/last-seen (java.util.Date.)}
         result (score/axes-vs-cluster {:ip "1.1.1.1" :fp-digest fp}
                                        [t])]
@@ -62,9 +62,9 @@
 (deftest axes-vs-cluster-prefers-most-recent-on-tie
   (let [fp-a (byte-array (repeat 32 1))
         fp-b (byte-array (repeat 32 2))
-        old  {:db/id 1 :tuple/ip "1.1.1.1" :tuple/fp-digest fp-a
+        old  {:db/id 1 :tuple/ip-hash "1.1.1.1" :tuple/fp-digest fp-a
               :tuple/last-seen (java.util.Date. 1000)}
-        new  {:db/id 2 :tuple/ip "1.1.1.1" :tuple/fp-digest fp-b
+        new  {:db/id 2 :tuple/ip-hash "1.1.1.1" :tuple/fp-digest fp-b
               :tuple/last-seen (java.util.Date. 99999)}
         result (score/axes-vs-cluster {:ip "1.1.1.1" :fp-digest fp-b}
                                        [old new])]

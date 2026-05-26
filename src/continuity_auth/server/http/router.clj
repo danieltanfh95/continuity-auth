@@ -49,11 +49,13 @@
   so it can read `:cauth/client-ip`. Tier 2 IP-anchored signals + Tier 3
   datacenter-CIDR multiplier are composed here from the merged config —
   see `mw/make-suspicion-fn`."
-  [deps {:keys [trusted-cidrs ip-header max-body-bytes bootstrap-rl]
+  [deps {:keys [trusted-cidrs ip-header max-body-bytes bootstrap-rl ip-hmac-key]
          :or {trusted-cidrs   []
               ip-header       "x-forwarded-for"
               max-body-bytes  65536
               bootstrap-rl    {}}}]
+  (when-not ip-hmac-key
+    (throw (ex-info "router/make-handler: missing :ip-hmac-key" {})))
   (let [{:keys [signals-enabled? signal-read-timeout-ms signal-cache-ttl-ms
                 datacenter-cidrs]} bootstrap-rl
         dc-ranges    (mw/parse-trusted-cidrs (or datacenter-cidrs ""))
@@ -81,7 +83,8 @@
                     :body "{\"ok\":false,\"code\":\"E_NOT_FOUND\",\"retry_after_ms\":0}"})}))
         (mw/wrap-bootstrap-rate-limit staircase-opts)
         (mw/wrap-trusted-proxy-ip {:trusted-cidrs trusted-cidrs
-                                    :ip-header     ip-header})
+                                    :ip-header     ip-header
+                                    :ip-hmac-key   ip-hmac-key})
         mw/wrap-json-response
         mw/wrap-json-body
         (mw/wrap-body-size-limit max-body-bytes)

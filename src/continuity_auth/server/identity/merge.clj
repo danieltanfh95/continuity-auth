@@ -78,7 +78,7 @@
      {:db/id                    -3
       :tuple/id                 tid
       :tuple/identity           -1
-      :tuple/ip                 (:ip incoming)
+      :tuple/ip-hash            (:ip incoming)
       :tuple/fp-digest          (:fp-digest incoming)
       :tuple/pubkey             -2
       :tuple/first-seen         d
@@ -101,7 +101,7 @@
   "All tuples attached to `identity-eid`."
   [store snap identity-eid]
   (storage/q store snap
-             '[:find [(pull ?t [:db/id :tuple/id :tuple/ip
+             '[:find [(pull ?t [:db/id :tuple/id :tuple/ip-hash
                                  :tuple/fp-digest :tuple/pubkey
                                  :tuple/first-seen :tuple/last-seen
                                  :tuple/observation-count]) ...]
@@ -110,16 +110,18 @@
              [identity-eid]))
 
 (defn- find-cross-cluster-ip-tuples
-  "Tuples whose :tuple/ip = ip and whose :tuple/identity != identity-eid."
-  [store snap ip identity-eid]
+  "Tuples whose :tuple/ip-hash = ip-hash and whose :tuple/identity !=
+  identity-eid. `ip-hash` is the opaque HMAC token (see
+  `continuity-auth.server.crypto.ip-hmac`)."
+  [store snap ip-hash identity-eid]
   (storage/q store snap
              '[:find [?t ...]
                :in $ ?ip ?ident
                :where
-               [?t :tuple/ip ?ip]
+               [?t :tuple/ip-hash ?ip]
                [?t :tuple/identity ?other]
                [(not= ?other ?ident)]]
-             [ip identity-eid]))
+             [ip-hash identity-eid]))
 
 (defn- find-cross-cluster-fp-tuples
   [store snap fp-digest identity-eid]
@@ -139,7 +141,7 @@
   (let [ip  (:ip incoming)
         fp  ^bytes (:fp-digest incoming)]
     (some (fn [t]
-            (when (and (= ip (:tuple/ip t))
+            (when (and (= ip (:tuple/ip-hash t))
                        (= pubkey-eid (or (:db/id (:tuple/pubkey t))
                                          (:tuple/pubkey t)))
                        (java.security.MessageDigest/isEqual
@@ -286,7 +288,7 @@
               [{:db/id                   -100
                 :tuple/id                tid
                 :tuple/identity          identity-eid
-                :tuple/ip                (:ip incoming)
+                :tuple/ip-hash           (:ip incoming)
                 :tuple/fp-digest         (:fp-digest incoming)
                 :tuple/pubkey            pubkey-eid
                 :tuple/first-seen        d

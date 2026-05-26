@@ -109,7 +109,7 @@
            :pubkey/created-at              n0}
           {:tuple/id                       tid
            :tuple/identity                 -1
-           :tuple/ip                       "192.0.2.1"
+           :tuple/ip-hash                  "192.0.2.1"
            :tuple/fp-digest                fpd
            :tuple/pubkey                   -2
            :tuple/first-seen               n0
@@ -117,9 +117,9 @@
            :tuple/observation-count        1}])
         (let [snap (protocol/snapshot store)
               by-ip (protocol/find-tuples-by-ip store snap "192.0.2.1")]
-          (testing "lookup by IP"
+          (testing "lookup by IP-hash"
             (is (= 1 (count by-ip)))
-            (is (= "192.0.2.1" (-> by-ip first :tuple/ip)))))
+            (is (= "192.0.2.1" (-> by-ip first :tuple/ip-hash)))))
 
         (let [snap (protocol/snapshot store)
               found (protocol/find-pubkey-by-thumbprint store snap pid)]

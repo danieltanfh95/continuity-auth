@@ -1,9 +1,11 @@
 (ns continuity-auth.server.system
   "Integrant system map for continuity-auth.
 
-  Components (init order):
+  Components (topological init order):
     :cauth/storage           — Datalevin connection, schema-version-checked
-    :cauth/nonce-sweeper     — background daemon thread reclaiming expired nonces
+    :cauth/ip-hmac-key       — IP-HMAC secret (loaded or auto-generated)
+    :cauth/migrate           — schema migrations (uses storage + ip-hmac-key)
+    :cauth/nonce-sweeper     — background daemon reclaiming expired nonces
     :cauth/clock             — injected clock function (Date now)
     :cauth/admin-keystore    — loaded admin HMAC keystore (or nil)
     :cauth/http-handler      — Ring handler with full middleware stack
@@ -12,6 +14,7 @@
   Halt is reverse-order: server → handler → sweeper → storage."
   (:require
    [continuity-auth.server.admin.hmac :as admin-hmac]
+   [continuity-auth.server.crypto.ip-hmac :as ip-hmac]
    [continuity-auth.server.http.middleware :as mw]
    [continuity-auth.server.http.router :as router]
    [continuity-auth.server.observability.logging :as logging]
@@ -28,13 +31,18 @@
   from `:server`, `:datalevin`, `:replay`, etc. of the aero-loaded
   config.edn."
   [{:keys [server datalevin replay ratelimit scoring trusted-proxies
-            limits observability grace hmac bootstrap-rate-limit]
+            limits observability grace hmac bootstrap-rate-limit
+            ip-hmac]
     :as config}]
   {:cauth/storage
    {:uri (:uri datalevin)}
 
+   :cauth/ip-hmac-key
+   {:config (or ip-hmac {})}
+
    :cauth/migrate
-   {:storage (ig/ref :cauth/storage)}
+   {:storage     (ig/ref :cauth/storage)
+    :ip-hmac-key (ig/ref :cauth/ip-hmac-key)}
 
    :cauth/clock
    {}
@@ -59,6 +67,7 @@
     :clock               (ig/ref :cauth/clock)
     :metrics             (ig/ref :cauth/metrics)
     :admin-keystore      (ig/ref :cauth/admin-keystore)
+    :ip-hmac-key         (ig/ref :cauth/ip-hmac-key)
     :config              config
     :replay              replay
     :rate-windows        (:windows ratelimit)
@@ -84,8 +93,14 @@
 (defmethod ig/halt-key! :cauth/storage [_ store]
   (storage/close store))
 
-(defmethod ig/init-key :cauth/migrate [_ {:keys [storage]}]
-  (let [outcome (migrations/migrate! storage)]
+(defmethod ig/init-key :cauth/ip-hmac-key [_ {:keys [config]}]
+  ;; Loads the keyfile (or env-supplied secret), generating a fresh
+  ;; 32-byte secret on disk if none is configured. Returns the raw
+  ;; ^bytes secret. Lifetime is process-scoped; nothing to halt.
+  (ip-hmac/load-or-create-key! (or config {})))
+
+(defmethod ig/init-key :cauth/migrate [_ {:keys [storage ip-hmac-key]}]
+  (let [outcome (migrations/migrate! storage {:ip-hmac-key ip-hmac-key})]
     {:outcome outcome}))
 
 (defmethod ig/init-key :cauth/clock [_ _]
@@ -144,7 +159,7 @@
 (defmethod ig/init-key :cauth/http-handler
   [_ {:keys [storage clock metrics replay rate-windows tier-limits
               scoring proxy limits grace admin-keystore config
-              bootstrap-rate-limit]}]
+              bootstrap-rate-limit ip-hmac-key]}]
   (router/make-handler
    {:store               storage
     :clock               clock
@@ -160,6 +175,7 @@
     :config              config}
    {:trusted-cidrs  (mw/parse-trusted-cidrs (:cidrs proxy))
     :ip-header      (:ip-header proxy)
+    :ip-hmac-key    ip-hmac-key
     :max-body-bytes (:max-body-bytes limits)
     :bootstrap-rl   (or bootstrap-rate-limit {})}))
 

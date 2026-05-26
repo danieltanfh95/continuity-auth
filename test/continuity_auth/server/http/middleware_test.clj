@@ -4,6 +4,7 @@
   (:require
    [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
+   [continuity-auth.server.crypto.ip-hmac :as ip-hmac]
    [continuity-auth.server.http.middleware :as mw]
    [continuity-auth.server.storage.protocol :as storage])
   (:import
@@ -116,8 +117,14 @@
     {:handler h :clock clock :seen seen}))
 
 (defn- bootstrap-req
+  "Build a synthetic /v1/bootstrap request for tests. `ip` plays both
+  roles (rate-limit bucket key + CIDR check input); in production these
+  are decoupled (hash vs raw), but for unit tests of the rate-limit
+  staircase they are identical opaque strings."
   ([ip] (bootstrap-req ip "/v1/bootstrap"))
-  ([ip uri] {:request-method :post :uri uri :cauth/client-ip ip}))
+  ([ip uri] {:request-method :post :uri uri
+             :cauth/client-ip ip
+             :cauth/client-ip-raw ip}))
 
 (deftest bootstrap-rate-limit-fresh-ip-allowed
   (testing "First bootstrap from a never-seen IP is allowed without delay."
@@ -326,11 +333,11 @@
   (testing "Without storage, signals are nil-on-each-axis so the multiplier
             collapses to ×1 (or ×5 if the IP hits a datacenter CIDR)."
     (let [f (mw/make-suspicion-fn {})]
-      (is (= 1.0 (f "1.2.3.4" 1000))))
+      (is (= 1.0 (f "1.2.3.4" "1.2.3.4" 1000))))
     (let [dcr (mw/parse-trusted-cidrs "10.0.0.0/8")
           f   (mw/make-suspicion-fn {:datacenter-cidrs dcr})]
-      (is (= 1.0 (f "1.2.3.4" 1000)))
-      (is (= 5.0 (f "10.0.0.5" 1000))))))
+      (is (= 1.0 (f "1.2.3.4" "1.2.3.4" 1000)))
+      (is (= 5.0 (f "10.0.0.5" "10.0.0.5" 1000))))))
 
 (deftest make-suspicion-fn-cache-hit-skips-read
   (testing "After a cache miss + read, a second call within TTL must NOT
@@ -343,10 +350,10 @@
                   {:storage         store
                    :cache-ttl-ms    60000
                    :read-timeout-ms 1000})]
-      (f "1.2.3.4" 1000)
+      (f "1.2.3.4" "1.2.3.4" 1000)
       (is (= 1 @reads) "first call triggers a storage read")
-      (f "1.2.3.4" 1500)
-      (f "1.2.3.4" 2000)
+      (f "1.2.3.4" "1.2.3.4" 1500)
+      (f "1.2.3.4" "1.2.3.4" 2000)
       (is (= 1 @reads) "subsequent calls within TTL are served from cache"))))
 
 (deftest make-suspicion-fn-cache-expires
@@ -359,9 +366,9 @@
                   {:storage         store
                    :cache-ttl-ms    1000
                    :read-timeout-ms 1000})]
-      (f "1.2.3.4" 1000)
+      (f "1.2.3.4" "1.2.3.4" 1000)
       (is (= 1 @reads))
-      (f "1.2.3.4" 2500) ; > 1000ms after cached-at — TTL expired
+      (f "1.2.3.4" "1.2.3.4" 2500) ; > 1000ms after cached-at — TTL expired
       (is (= 2 @reads) "stale entry triggered a re-read"))))
 
 (deftest make-suspicion-fn-timeout-falls-back-to-neutral
@@ -375,7 +382,7 @@
                   {:storage         store
                    :read-timeout-ms 25
                    :on-fallback     (fn [kind ex] (swap! fallback-events conj [kind ex]))})]
-      (is (= 1.0 (f "1.2.3.4" 1000))
+      (is (= 1.0 (f "1.2.3.4" "1.2.3.4" 1000))
           "neutral multiplier when the read times out")
       (is (= 1 (count @fallback-events)))
       (is (= :timeout (-> @fallback-events first first))))))
@@ -388,7 +395,7 @@
                   {:storage     store
                    :on-fallback (fn [kind ex]
                                   (swap! fallback-events conj [kind (some? ex)]))})]
-      (is (= 1.0 (f "1.2.3.4" 1000)))
+      (is (= 1.0 (f "1.2.3.4" "1.2.3.4" 1000)))
       (is (= 1 (count @fallback-events)))
       (is (= :exception (-> @fallback-events first first))))))
 
@@ -402,14 +409,14 @@
                   {:storage          store
                    :datacenter-cidrs dcr})]
       ;; 1d-old IP with 0 identities = 3.0; datacenter-hit ×5 = 15.0
-      (is (= 15.0 (f "203.0.113.5" 1000)))
+      (is (= 15.0 (f "203.0.113.5" "203.0.113.5" 1000)))
       ;; Outside the CIDR: just 3.0
       (let [store2 (stub-storage
                      {:signals {"198.51.100.5" {:ip-age-seconds 86400 :identity-count 0}}})
             f2    (mw/make-suspicion-fn
                     {:storage          store2
                      :datacenter-cidrs dcr})]
-        (is (= 3.0 (f2 "198.51.100.5" 1000)))))))
+        (is (= 3.0 (f2 "198.51.100.5" "198.51.100.5" 1000)))))))
 
 (deftest bootstrap-rate-limit-honours-suspicion-multiplier
   (testing "When suspicion-fn returns 10.0, the staircase floor is 10× as
@@ -418,7 +425,7 @@
                                     {:floor-ms 1000 :cap-ms 60000
                                      :doubling-factor 2
                                      :reset-threshold-ms 300000
-                                     :suspicion-fn (fn [_ip _now] 10.0)})
+                                     :suspicion-fn (fn [_ip _raw _now] 10.0)})
           advance (:advance clock)]
       ;; t=0: allow.
       (is (= 201 (:status (handler (bootstrap-req "1.2.3.4")))))
@@ -435,7 +442,7 @@
                                     {:floor-ms 1000 :cap-ms 5000
                                      :doubling-factor 2
                                      :reset-threshold-ms 300000
-                                     :suspicion-fn (fn [_ip _now] 100.0)})
+                                     :suspicion-fn (fn [_ip _raw _now] 100.0)})
           advance (:advance clock)]
       (is (= 201 (:status (handler (bootstrap-req "1.2.3.4")))))
       ;; Penalty would be 1000 × 100 = 100s without the cap; with cap=5s
@@ -453,11 +460,11 @@
     ;; make-suspicion-fn which uses it.
     (let [ranges (mw/parse-trusted-cidrs "203.0.113.0/24,10.0.0.0/8")
           f      (mw/make-suspicion-fn {:datacenter-cidrs ranges})]
-      (is (= 5.0 (f "203.0.113.5" 1)))
-      (is (= 5.0 (f "10.5.5.5"    1)))
-      (is (= 1.0 (f "198.51.100.5" 1)))
+      (is (= 5.0 (f "203.0.113.5" "203.0.113.5" 1)))
+      (is (= 5.0 (f "10.5.5.5"    "10.5.5.5"    1)))
+      (is (= 1.0 (f "198.51.100.5" "198.51.100.5" 1)))
       ;; Non-IPv4 input must not crash; treat as miss.
-      (is (= 1.0 (f "not-an-ip" 1))))))
+      (is (= 1.0 (f "not-an-ip" "not-an-ip" 1))))))
 
 (deftest bootstrap-rate-limit-denies-do-not-compound
   (testing "Repeated denied attempts inside a single penalty window do not
@@ -487,3 +494,108 @@
       (is (= 429 (:status (handler (bootstrap-req "1.2.3.4")))))
       (advance 2)
       (is (= 201 (:status (handler (bootstrap-req "1.2.3.4"))))))))
+
+;; -- wrap-trusted-proxy-ip + ingress IP hashing ----------------------------
+;;
+;; At HTTP ingress we hash the raw IP under a per-deployment HMAC key.
+;; `:cauth/client-ip`     — hex hash; flows downstream, persists into the store.
+;; `:cauth/client-ip-raw` — plaintext; consumed only by the CIDR check in
+;;                          `wrap-bootstrap-rate-limit`; never logged, never
+;;                          persisted.
+;; The handler MUST throw at construction time if no key is supplied —
+;; running without one would silently regress to plaintext IP storage.
+
+(def ^:private test-ip-hmac-key
+  (byte-array (map byte (range 32))))
+
+(defn- capture-handler []
+  (let [captured (atom nil)]
+    {:handler (fn [req] (reset! captured req) {:status 200})
+     :captured captured}))
+
+(deftest wrap-trusted-proxy-ip-sets-both-hashed-and-raw
+  (testing "Ingress hashes the resolved client IP, sets :cauth/client-ip
+            to the hex hash, and keeps the plaintext IP on
+            :cauth/client-ip-raw for the in-process CIDR check."
+    (let [{:keys [handler captured]} (capture-handler)
+          h (mw/wrap-trusted-proxy-ip
+             handler
+             {:trusted-cidrs (mw/parse-trusted-cidrs "10.0.0.0/8")
+              :ip-header     "x-forwarded-for"
+              :ip-hmac-key   test-ip-hmac-key})
+          _ (h {:remote-addr "10.0.0.1"
+                :headers {"x-forwarded-for" "203.0.113.7, 10.0.0.5"}})
+          req @captured]
+      (is (= "203.0.113.7" (:cauth/client-ip-raw req)))
+      (is (= (ip-hmac/hmac-ip-hex test-ip-hmac-key "203.0.113.7")
+             (:cauth/client-ip req)))
+      (is (re-matches #"[0-9a-f]{64}" (:cauth/client-ip req)))
+      (testing "the hashed key and the raw key are distinct strings"
+        (is (not= (:cauth/client-ip req) (:cauth/client-ip-raw req)))))))
+
+(deftest wrap-trusted-proxy-ip-determinism-same-ip-same-hash
+  (testing "Two requests from the same IP through the same instance
+            (and therefore the same key) hash to the same value — this
+            is what makes cluster-by-IP still work after pseudonymisation."
+    (let [{:keys [handler captured]} (capture-handler)
+          h (mw/wrap-trusted-proxy-ip
+             handler
+             {:trusted-cidrs (mw/parse-trusted-cidrs "10.0.0.0/8")
+              :ip-header     "x-forwarded-for"
+              :ip-hmac-key   test-ip-hmac-key})
+          req {:remote-addr "10.0.0.1"
+               :headers {"x-forwarded-for" "198.51.100.42, 10.0.0.5"}}
+          _ (h req)
+          h1 (:cauth/client-ip @captured)
+          _ (h req)
+          h2 (:cauth/client-ip @captured)]
+      (is (= h1 h2)))))
+
+(deftest wrap-trusted-proxy-ip-distinct-ips-distinct-hashes
+  (testing "Different IPs produce different hashes (cluster discrimination
+            is preserved post-pseudonymisation)."
+    (let [{:keys [handler captured]} (capture-handler)
+          h (mw/wrap-trusted-proxy-ip
+             handler
+             {:trusted-cidrs (mw/parse-trusted-cidrs "10.0.0.0/8")
+              :ip-header     "x-forwarded-for"
+              :ip-hmac-key   test-ip-hmac-key})
+          _ (h {:remote-addr "10.0.0.1"
+                :headers {"x-forwarded-for" "198.51.100.1, 10.0.0.5"}})
+          a (:cauth/client-ip @captured)
+          _ (h {:remote-addr "10.0.0.1"
+                :headers {"x-forwarded-for" "198.51.100.2, 10.0.0.5"}})
+          b (:cauth/client-ip @captured)]
+      (is (not= a b)))))
+
+(deftest wrap-trusted-proxy-ip-rejects-missing-key
+  (testing "Constructor refuses to build the handler without an IP-HMAC
+            key. The wrong failure mode would be silent fallback to
+            plaintext, which is exactly what this work is undoing."
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (mw/wrap-trusted-proxy-ip
+                  (fn [_] {:status 200})
+                  {:trusted-cidrs []
+                   :ip-header     "x-forwarded-for"})))))
+
+(deftest wrap-trusted-proxy-ip-distinct-keys-distinct-hashes
+  (testing "Two deployments with different keys hashing the same IP must
+            produce different downstream cluster keys — otherwise an
+            attacker dumping one store could correlate against another."
+    (let [k1 test-ip-hmac-key
+          k2 (byte-array (map (fn [i] (byte (bit-and (+ i 64) 0xff)))
+                              (range 32)))
+          {h1 :handler c1 :captured} (capture-handler)
+          {h2 :handler c2 :captured} (capture-handler)
+          mw1 (mw/wrap-trusted-proxy-ip
+               h1 {:trusted-cidrs [] :ip-hmac-key k1})
+          mw2 (mw/wrap-trusted-proxy-ip
+               h2 {:trusted-cidrs [] :ip-hmac-key k2})
+          req {:remote-addr "203.0.113.10" :headers {}}]
+      (mw1 req)
+      (mw2 req)
+      (is (not= (:cauth/client-ip @c1)
+                (:cauth/client-ip @c2)))
+      (testing "the plaintext IP is preserved identically in both"
+        (is (= "203.0.113.10" (:cauth/client-ip-raw @c1)))
+        (is (= "203.0.113.10" (:cauth/client-ip-raw @c2)))))))

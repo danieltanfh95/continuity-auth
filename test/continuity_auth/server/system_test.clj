@@ -86,12 +86,15 @@
 
 (defn- override-config
   "Replace storage URI with a temp dir and server port with 0 so the
-  system can run in a test sandbox."
-  [config dir]
+  system can run in a test sandbox. `keyfile-path` is a sibling of
+  `dir` (NOT inside it — Datalevin refuses to open a directory that
+  contains foreign files)."
+  [config dir keyfile-path]
   (-> config
       (assoc-in [:datalevin :uri] (.toString dir))
       (assoc-in [:server :port] 0)
       (assoc-in [:server :join?] false)
+      (assoc-in [:ip-hmac :key-path] (.toString keyfile-path))
       ;; Don't actually bind a real metrics bearer — the test exercises
       ;; the verify path, not /metrics.
       (assoc-in [:observability :metrics-enabled?] false)))
@@ -106,10 +109,14 @@
   (testing "Boot from resources/config.edn at :dev profile, exercise
             bootstrap → verify; the per-tier limits must allow at least
             one verify (codex C6 regression)."
-    (let [dir    (temp-dir)
-          cfg    (-> (config/load-config :dev)
-                     (override-config dir))
-          system (system/start cfg)]
+    (let [dir         (temp-dir)
+          keyfile     (java.nio.file.Files/createTempFile
+                       "cauth-sys-ip-hmac-" ".key"
+                       (into-array FileAttribute []))
+          _           (.delete (.toFile keyfile)) ; auto-generate on first use
+          cfg         (-> (config/load-config :dev)
+                          (override-config dir keyfile))
+          system      (system/start cfg)]
       (try
         (let [port (server-port system)]
           ;; /healthz live
@@ -160,4 +167,5 @@
                   (str "verify must allow under default config; got " (:body vres))))))
         (finally
           (system/stop system)
-          (delete-recursively dir))))))
+          (delete-recursively dir)
+          (.delete (.toFile keyfile)))))))

@@ -24,7 +24,7 @@ Each axis in the trust vector has different epistemic status. This asymmetry is 
 
 | Axis | Source | Server-verifiable? | Spoof difficulty | Trust role |
 |---|---|---|---|---|
-| `ip` | TCP/IP connection (or trusted-proxy header) | Yes — via the network stack | Hard for the naive attacker; trivial with a VPN/proxy chain | **Observed** |
+| `ip` | TCP/IP connection (or trusted-proxy header), stored as `HMAC-SHA256(ip)` under a server keystore secret (`:tuple/ip-hash`); raw IP exposed only inside the request's middleware chain for the CIDR check, never persisted, never logged | Yes — via the network stack | Hard for the naive attacker; trivial with a VPN/proxy chain | **Observed** |
 | `fp-digest` | Client-computed; client claims it in the envelope | No — the server cannot independently compute the client's browser fingerprint | Trivial — any attacker can claim any digest | **Claimed** |
 | `pubkey` | Client signs the envelope with the corresponding private key; pubkey thumbprint is in the envelope | Yes — by verifying the signature | Hard — requires private-key compromise via substrate-specific path (XSS for browser non-extractable WebCrypto, filesystem read for CLI PEM, physical device access for hardware-anchored) | **Cryptographic** |
 | `host-user-id` | Host backend attests the binding via HMAC over a server-to-server call | Yes — by verifying the HMAC | Requires host secret compromise | **Cryptographic-by-proxy** |

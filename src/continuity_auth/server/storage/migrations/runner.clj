@@ -2,10 +2,12 @@
   "Schema migrations runner.
 
   Migrations are ordered, idempotent transformations from one schema
-  version to the next. Each migration is a function `(fn [storage] ...)`
-  that applies its changes and ends by writing the new
-  `:schema/version`. The runner reads the persisted version and applies
-  migrations in order until it reaches the code's `schema-version`.
+  version to the next. Each migration is a function
+  `(fn [storage ctx] ...)` that applies its changes and ends by writing
+  the new `:schema/version`. `ctx` carries side inputs the migration
+  needs (e.g. the IP-HMAC key for v2→v3). The runner reads the persisted
+  version and applies migrations in order until it reaches the code's
+  `schema-version`.
 
   Invocation:
     clojure -M:migrate -- --uri <uri-or-path>
@@ -14,16 +16,45 @@
   unless the persisted version matches the code's version exactly."
   (:require
    [clojure.tools.cli :as cli]
+   [continuity-auth.server.crypto.ip-hmac :as ip-hmac]
    [continuity-auth.server.storage.datalevin :as dtlv]
    [continuity-auth.server.storage.protocol :as protocol]
    [continuity-auth.server.storage.schema :as schema]))
 
+(defn- rehash-tuple-ips!
+  "v2→v3 transform: enumerate every tuple with `:tuple/ip`, compute the
+  HMAC-hex under `ip-hmac-key`, transact `:tuple/ip-hash` and retract
+  the legacy `:tuple/ip` attribute. Batched at `batch-size` entities to
+  bound the txn size. Idempotent: a second run finds zero
+  `[?e :tuple/ip ?ip]` and is a no-op."
+  [storage ip-hmac-key]
+  (let [batch-size 1000]
+    (loop [total 0]
+      (let [snap (protocol/snapshot storage)
+            rows (protocol/q storage snap
+                             '[:find ?e ?ip
+                               :where [?e :tuple/ip ?ip]]
+                             [])
+            batch (take batch-size rows)]
+        (if (empty? batch)
+          (do (println (str "rehash-tuple-ips!: " total " tuple(s) migrated"))
+              total)
+          (let [tx (into []
+                         (mapcat (fn [[eid ip]]
+                                   [[:db/add eid :tuple/ip-hash
+                                     (ip-hmac/hmac-ip-hex ip-hmac-key ip)]
+                                    [:db/retract eid :tuple/ip ip]]))
+                         batch)]
+            (protocol/transact! storage tx)
+            (recur (+ total (count batch)))))))))
+
 (def migrations
   "Ordered list of migrations. Each entry is `[from-version to-version
   migration-fn]`. The runner applies each in turn until reaching the
-  code's current schema-version."
+  code's current schema-version. The migration-fn takes
+  `[storage ctx]`."
   [;; -- v0 → v1: initial install --------------------------------------
-   [0 1 (fn install-v1 [storage]
+   [0 1 (fn install-v1 [storage _ctx]
           (protocol/transact! storage [{:schema/version 1}]))]
 
    ;; -- v1 → v2: add :bucket/key for slot uniqueness ------------------
@@ -32,8 +63,22 @@
    ;; from a pre-v2 deploy) are left as-is — they have no `:bucket/key`
    ;; and won't collide with new keyed buckets. The next sweep at the
    ;; window's expiry retracts them.
-   [1 2 (fn install-v2 [storage]
-          (protocol/transact! storage [{:schema/version 2}]))]])
+   [1 2 (fn install-v2 [storage _ctx]
+          (protocol/transact! storage [{:schema/version 2}]))]
+
+   ;; -- v2 → v3: pseudonymise :tuple/ip via HMAC ----------------------
+   ;; The new `:tuple/ip-hash` attribute is declared in the schema map.
+   ;; This migration enumerates every `:tuple/ip`, computes
+   ;; HMAC-SHA256(ip) under the runtime IP-HMAC keystore secret
+   ;; (hex-encoded), transacts the hash to `:tuple/ip-hash`, and
+   ;; retracts the legacy `:tuple/ip`. The legacy attribute is
+   ;; removed from `schema/schema` in code, so post-migration writes
+   ;; can no longer create raw-IP entries.
+   [2 3 (fn install-v3 [storage {:keys [ip-hmac-key]}]
+          (when-not ip-hmac-key
+            (throw (ex-info "v2→v3 migration requires :ip-hmac-key in ctx" {})))
+          (rehash-tuple-ips! storage ip-hmac-key)
+          (protocol/transact! storage [{:schema/version 3}]))]])
 
 (defn- migrations-from [from-version target-version]
   (->> migrations
@@ -42,14 +87,16 @@
 
 (defn migrate!
   "Apply pending migrations against `storage` to reach `target-version`.
-  Returns one of:
+  `ctx` carries side inputs the migrations need (currently
+  `{:ip-hmac-key ^bytes}` for v2→v3). Returns one of:
     :ok            — already at target.
     :installed     — initial install applied.
     :upgraded      — at least one migration applied.
-    :no-op         — caller passed a target equal to existing.
-  Throws if the persisted version is greater than target."
-  ([storage] (migrate! storage schema/schema-version))
-  ([storage target-version]
+  Throws if the persisted version is greater than target, or if a
+  pending migration's `ctx` requirement is unmet."
+  ([storage] (migrate! storage {} schema/schema-version))
+  ([storage ctx] (migrate! storage ctx schema/schema-version))
+  ([storage ctx target-version]
    (let [snap     (protocol/snapshot storage)
          existing (->> (protocol/q storage snap
                                    '[:find [?v ...]
@@ -71,7 +118,7 @@
        (let [pending (migrations-from existing target-version)]
          (doseq [[from to f] pending]
            (println (str "applying migration: v" from " → v" to))
-           (f storage))
+           (f storage ctx))
          (if (zero? existing) :installed :upgraded))))))
 
 (def ^:private cli-spec
@@ -79,6 +126,8 @@
     :default "/tmp/continuity-auth-dev.dtlv"]
    ["-t" "--target VERSION" "Target schema version (default: current code)"
     :default schema/schema-version :parse-fn parse-long]
+   [nil "--ip-hmac-key-path PATH" "Path to the IP-HMAC keyfile (EDN)"
+    :default nil]
    ["-h" "--help" "Show this help"]])
 
 (defn -main [& args]
@@ -93,10 +142,12 @@
           (System/exit 0))
 
       :else
-      (let [{:keys [uri target]} options
-            storage              (dtlv/open uri)]
+      (let [{:keys [uri target ip-hmac-key-path]} options
+            storage     (dtlv/open uri)
+            ip-hmac-key (ip-hmac/load-or-create-key!
+                         {:key-path ip-hmac-key-path})]
         (try
-          (let [result (migrate! storage target)]
+          (let [result (migrate! storage {:ip-hmac-key ip-hmac-key} target)]
             (println (str "schema: " (name result)
                           " (now at v" target ")"))
             (System/exit 0))

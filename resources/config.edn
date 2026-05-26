@@ -85,6 +85,23 @@
   :host-keys-path  #or [#env CAUTH_HOST_HMAC_KEYS_PATH ""]
   :admin-keys-path #or [#env CAUTH_ADMIN_HMAC_KEYS_PATH ""]}
 
+ ;; Server-side IP-HMAC key. The raw client IP is hashed at HTTP ingress
+ ;; (`wrap-trusted-proxy-ip`) under this key; only the hash is stored.
+ ;; Precedence at startup (see `continuity-auth.server.crypto.ip-hmac`):
+ ;;   1. `CAUTH_IP_HMAC_KEY` (base64, 32 bytes) — direct env-supplied secret
+ ;;   2. `:key-path` (or `CAUTH_IP_HMAC_KEY_PATH`) — EDN keyfile on disk
+ ;;   3. If the path has no file: auto-generate 32 SecureRandom bytes,
+ ;;      write the EDN file with mode 0600, use it. Subsequent restarts
+ ;;      re-read the same file.
+ ;; The file MUST persist across restarts; losing it fragments the
+ ;; cluster grouping for all existing tuples.
+ :ip-hmac
+ {:key-path #or [#env CAUTH_IP_HMAC_KEY_PATH
+                 #profile {:dev  "/tmp/continuity-auth-dev-ip-hmac.key"
+                           :test "/tmp/continuity-auth-test-ip-hmac.key"
+                           :prod "/var/lib/continuity-auth/ip-hmac.key"}]
+  :key-b64  #or [#env CAUTH_IP_HMAC_KEY ""]}
+
  :observability
  {:metrics-enabled?     true
   :prometheus-bearer    #or [#env CAUTH_PROM_BEARER ""]

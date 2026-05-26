@@ -36,7 +36,7 @@
     (d/db snap)))
 
 (def ^:private tuple-pull-attrs
-  [:db/id :tuple/id :tuple/identity :tuple/ip
+  [:db/id :tuple/id :tuple/identity :tuple/ip-hash
    :tuple/fp-digest :tuple/pubkey
    :tuple/first-seen :tuple/last-seen
    :tuple/observation-count])
@@ -84,21 +84,21 @@
                  {:pubkey/rotation-of [:db/id :pubkey/id]}]
                 eid))))
 
-  (find-tuples-by-ip [_ snap ip]
-    (find-tuples-by-attr (to-db snap) :tuple/ip ip))
+  (find-tuples-by-ip [_ snap ip-hash]
+    (find-tuples-by-attr (to-db snap) :tuple/ip-hash ip-hash))
 
-  (bootstrap-signals-for-ip [_ snap ip now-ms]
+  (bootstrap-signals-for-ip [_ snap ip-hash now-ms]
     (let [db (to-db snap)
-          ;; Two indexed AVET queries on :tuple/ip — first-seen as Date
+          ;; Two indexed AVET queries on :tuple/ip-hash — first-seen as Date
           ;; (we take the minimum to get the earliest), and the distinct
           ;; identity set (count its cardinality).
           rows (d/q '[:find ?first-seen ?identity
                       :in $ ?ip
                       :where
-                      [?e :tuple/ip ?ip]
+                      [?e :tuple/ip-hash ?ip]
                       [?e :tuple/first-seen ?first-seen]
                       [?e :tuple/identity ?identity]]
-                    db ip)]
+                    db ip-hash)]
       (if (empty? rows)
         {:ip-age-seconds 0 :identity-count 0}
         (let [earliest-ms (reduce min Long/MAX_VALUE

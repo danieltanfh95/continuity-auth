@@ -1,12 +1,12 @@
 # continuity-auth — threat model
 
-Defensive analysis of continuity-auth as a *parallel auth method*: it does not replace host authentication; it provides advisory trust/rate-limit decisions to a host application that calls `POST /v1/verify` from its backend.
+Defensive analysis of continuity-auth as a *parallel auth method*. It does not replace host authentication. It provides advisory trust/rate-limit decisions to a host application that calls `POST /v1/verify` from its backend.
 
 This document maps the attacks we *do* defend against, the attacks we *do not*, and where the boundary lies. Code-level evidence (test files) is referenced alongside each mitigation so reviewers can audit the implementation against the model.
 
 ## Scope
 
-**In scope (v1):**
+**In scope:**
 - Opportunistic abuse: a single attacker probing free-tier limits or attempting low-effort sybil
 - Automated extraction: bots probing systematically
 - Replay attacks: capture-and-resubmit of signed envelopes
@@ -18,9 +18,18 @@ This document maps the attacks we *do* defend against, the attacks we *do not*, 
 - Side-channel timing on signature verify
 - Forced trust decay (denial of service against a specific identity)
 
-All threats below assume a level-1+ caller (engaged with the protocol — see the engagement-ladder framing in [`../README.md`](../README.md)). Level-0 callers (no envelope at all) bypass continuity-auth entirely; the host's per-IP / CAPTCHA layer is what catches them. Fallback for non-engaging callers is a host-side composition concern, not a continuity-auth feature.
+All threats below assume a level-1+ caller (engaged with the protocol). The engagement ladder is:
 
-**Out of scope (v1):**
+| Level | What the caller does | What continuity-auth provides | Fallback |
+|---|---|---|---|
+| 0 | No envelope at all | No signal | Host's per-IP / CAPTCHA layer |
+| 1 | Bootstrap once, sign requests | Anonymous tier (low budget) | Anonymous IS the fallback |
+| 2 | Sustain low-anomaly observation | Tracked tier (higher budget) | Decay returns to lower tier if abandoned |
+| 3 | Host-link attestation (v1.1) | Highest tier (host-attested identity) | Falls back to level 2 if host-link revoked |
+
+Level-0 callers (no envelope at all) bypass continuity-auth entirely. The host's per-IP or CAPTCHA layer is what catches them. Fallback for non-engaging callers is a host-side composition concern, not a continuity-auth feature. Level 1 (bootstrap-only) is intentionally cheap by design. Any client can mint a fresh identity in one HTTP call. The trust gradient (anonymous → tracked → host-linked) is what climbing the levels earns.
+
+**Out of scope:**
 - Nation-state actors with rotating residential proxy pools + headless browser farms with per-instance fingerprint randomization
 - Host application compromise (if the host's auth or HMAC keys leak, recovery is the host's responsibility)
 - Physical-device compromise (key extracted via direct device access)
@@ -62,14 +71,24 @@ All threats below assume a level-1+ caller (engaged with the protocol — see th
 | T18 | Replayed admin call (captured Sig header reused) | Authenticity / freshness | Admin nonce is recorded in the same unique-attribute nonce cache as envelope nonces; duplicate rejected with `E_REPLAY`. Nonce check happens AFTER signature verifies, so attackers can't pollute the cache by spamming junk. | `src/.../http/handlers/admin.clj` `verify-admin!`, `src/.../replay/nonce.clj` `check-and-record!`. |
 | ~~T19~~ | (Retired) — formerly "filesystem-resident private key (non-browser clients)"; collapsed into T1's CLI-substrate row when T1 was reframed as substrate-dependent. Renumbering reserved for the next protocol change. | — | — | — |
 
+## PII minimisation: stored IP is pseudonymous
+
+The trust service stores `:tuple/ip-hash` (hex of `HMAC-SHA256(client-ip)` under a server-side keystore secret), never the raw IP. The raw IP exists only inside the request's middleware chain. `wrap-trusted-proxy-ip` writes both the hash and the plaintext onto the ring request, and exactly one downstream consumer (`wrap-bootstrap-rate-limit`'s datacenter-CIDR check) reads the plaintext. It is never logged and never persisted.
+
+Hashing is deterministic under a fixed key, so cluster grouping by IP works unchanged. An operator dumping the Datalevin store sees opaque hex in the IP column. Reversing a stored hash requires the keystore secret as well as the dump. Even then the IPv4 search space is only 2³². The property is non-trivial linking under defence-in-depth, not collision resistance.
+
+Failure mode: an operator with both the store dump and the keyfile can reverse the IP for any tuple. The change reduces blast radius from "anyone with the store reads IPs" to "anyone with the store AND the key reads IPs".
+
+Key handling, rotation policy, and disposal live in `docs/runbook.md` "IP-HMAC keystore". The current build has no hot rotation. The runbook covers the cost and the redeploy workaround.
+
 ## Untreated risks (open items)
 
 These are known gaps documented for the operator:
 
-- **T8 implementation**: `POST /v1/link-account` is specified in `docs/api.md` but not yet implemented as an HTTP handler. v1.0 ships without the host-link path. Acceptable because tier uplift from anonymous → tracked happens via *sustained observation* in the pubkey-anchored cluster (the score model in `score.clj`); the host-link path is purely additive in v1.1.
-- **T14 bootstrap rate limit — cross-instance fairness**: per-IP exponential backoff is implemented and on by default (`wrap-bootstrap-rate-limit` in `http/middleware.clj`; floor 1s, cap 60s, doubling factor 2, 5-minute quiet reset). The staircase collapses a one-IP attacker from "5 identities/min indefinitely" (the prior flat-quota shape) to roughly 60 identities/hour steady-state, while legitimate users behind shared NAT pay at most floor-ms once before bootstrapping. The strike state is a per-instance atom; an HA cluster of N nodes behind a load-balancer multiplies the per-IP rate by N. Cross-instance fairness requires backing the limiter with the Datalevin `ratelimit/window.clj` infrastructure (v1.1; see plan §"Out of scope" Tier 4). Per-IP aggregation is acceptable at bootstrap specifically because the false-positive cost is bounded (one delay before bootstrap, no impact on existing identities from that IP); the rest of the protocol keeps IP advisory.
+- **T8 implementation**: `POST /v1/link-account` is specified in `docs/api.md` but not yet implemented as an HTTP handler. v1.0 ships without the host-link path. Acceptable because tier uplift from anonymous → tracked happens via *sustained observation* in the pubkey-anchored cluster (the score model in `score.clj`). The host-link path is purely additive in v1.1.
+- **T14 bootstrap rate limit — cross-instance fairness**: per-IP exponential backoff is implemented and on by default (`wrap-bootstrap-rate-limit` in `http/middleware.clj`, floor 1s, cap 60s, doubling factor 2, 5-minute quiet reset). The staircase collapses a one-IP attacker from "5 identities/min indefinitely" (the prior flat-quota shape) to roughly 60 identities/hour steady-state, while legitimate users behind shared NAT pay at most floor-ms once before bootstrapping. The strike state is a per-instance atom. An HA cluster of N nodes behind a load-balancer multiplies the per-IP rate by N. Cross-instance fairness requires backing the limiter with the Datalevin `ratelimit/window.clj` infrastructure (v1.1, see plan §"Out of scope" Tier 4). Per-IP aggregation is acceptable at bootstrap specifically because the false-positive cost is bounded (one delay before bootstrap, no impact on existing identities from that IP). The rest of the protocol keeps IP advisory.
 
-  The framing is "time as a resource": the defender's wall-clock is unparallelizable and unforgeable, so an attacker with parallel compute on one IP still pays the same calendar as everyone else. A PoW gate (Anubis-style) prices the attacker in CPU-hours, which commoditizes via cheap GPU rentals; the exponential-backoff staircase prices them in wall-clock seconds, which doesn't. The Tier 2 IP-anchored signal layer (IP-age and identity-count-per-IP) further raises the multiplier for IPs that look attacker-shaped without changing the floor for legitimate users.
+  The framing is "time as a resource". The defender's wall-clock is unparallelizable and unforgeable, so an attacker with parallel compute on one IP still pays the same calendar as everyone else. A PoW gate (Anubis-style) prices the attacker in CPU-hours, which commoditizes via cheap GPU rentals. The exponential-backoff staircase prices them in wall-clock seconds, which doesn't. The Tier 2 IP-anchored signal layer (IP-age and identity-count-per-IP) further raises the multiplier for IPs that look attacker-shaped without changing the floor for legitimate users.
 - **T15 event loss**: the 5-second watermark is documented but not yet implemented. v1.0 has fire-and-forget async transacts.
 
 ## Invariants (cross-referenced with `docs/ontology.md §10`)

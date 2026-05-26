@@ -35,23 +35,25 @@
     :pubkey/bytes, :pubkey/alg, :pubkey/revoked-at) or nil.")
 
   (find-tuples-by-ip
-    [this snapshot ip]
-    "Indexed lookup: all tuples whose :tuple/ip = ip. Returns a seq of
-    entity maps.")
+    [this snapshot ip-hash]
+    "Indexed lookup: all tuples whose :tuple/ip-hash = ip-hash. `ip-hash`
+    is an opaque string (the hex of HMAC-SHA256(ip) under the server
+    keystore — see `continuity-auth.server.crypto.ip-hmac`). Returns a
+    seq of entity maps.")
 
   (bootstrap-signals-for-ip
-    [this snapshot ip now-ms]
-    "Aggregate Tier-2 bootstrap-rate-limit signals for `ip` as of
-    `snapshot`. Returns:
+    [this snapshot ip-hash now-ms]
+    "Aggregate Tier-2 bootstrap-rate-limit signals for `ip-hash` as of
+    `snapshot`. `ip-hash` is opaque (HMAC of the raw IP). Returns:
 
         {:ip-age-seconds long  ; (now-ms / 1000) - min(:tuple/first-seen-seconds),
                                ; or 0 if the IP has never been seen
          :identity-count long} ; distinct :tuple/identity over tuples
-                               ; with :tuple/ip = ip; 0 if never seen
+                               ; with :tuple/ip-hash = ip-hash; 0 if never seen
 
-    Backed by the indexed AVET on :tuple/ip — should be O(log N) and
-    sub-millisecond on a healthy store. Used by the bootstrap rate-limit
-    middleware to compute the per-IP suspicion multiplier.")
+    Backed by the indexed AVET on :tuple/ip-hash — should be O(log N)
+    and sub-millisecond on a healthy store. Used by the bootstrap
+    rate-limit middleware to compute the per-IP suspicion multiplier.")
 
   (find-tuples-by-fp
     [this snapshot fp-digest-bytes]

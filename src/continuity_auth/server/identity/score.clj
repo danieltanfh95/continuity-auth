@@ -79,7 +79,7 @@
   existing tuple in the same pubkey-anchored cluster.
 
   Returns a map:
-    :exact?         — true iff incoming.ip = existing.ip AND
+    :exact?         — true iff incoming.ip = existing.ip-hash AND
                                 incoming.fp = existing.fp
     :mismatch-axes  — set of axes that differ (subset of #{:ip :fp})
 
@@ -90,9 +90,13 @@
 
   This function does not consider :pubkey — the pubkey axis is always
   'matched' in the verify path (otherwise we would not be on the verify
-  path)."
+  path).
+
+  Note: `(:ip incoming)` is the IP-hash (HMAC-SHA256 hex) — see
+  `continuity-auth.server.crypto.ip-hmac`. Equality is preserved under
+  a fixed keystore key, so cluster grouping is unchanged."
   [incoming closest]
-  (let [ip-same? (= (:ip incoming)        (:tuple/ip closest))
+  (let [ip-same? (= (:ip incoming)        (:tuple/ip-hash closest))
         fp-same? (java.security.MessageDigest/isEqual
                   ^bytes (:fp-digest incoming)
                   ^bytes (:tuple/fp-digest closest))
