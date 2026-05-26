@@ -1,0 +1,10 @@
+#!/usr/bin/env bb
+;; continuity — cryptographic device-continuity client for continuity-auth.
+;;
+;; This script delegates to `continuity-auth.client.dispatch/main`, which
+;; routes to `continuity-auth.client.cli` (auth subcommands) or
+;; `continuity-auth.admin.cli` (admin subcommands). The dispatcher loads
+;; under both babashka (the install-ergonomic path; see install.sh) and
+;; JVM Clojure (for development).
+(require '[continuity-auth.client.dispatch :as d])
+(System/exit (apply d/main *command-line-args*))

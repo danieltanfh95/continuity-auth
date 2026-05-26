@@ -24,7 +24,7 @@ thumbprint = SHA-256(canonical_pubkey_bytes)
 The signature covers a deterministic length-prefixed binary representation of the envelope. This is NOT JSON — JSON canonicalization has too many edge cases (Unicode normalization, number formatting, key ordering, whitespace).
 
 ```
-"FPL1\n"                                   ; version tag, 5 bytes literal
+"FPL2\n"                                   ; version tag, 5 bytes literal
 uint32-BE(len) || method                   ; UTF-8 method, e.g. "POST"
 uint32-BE(len) || path                     ; UTF-8 path + canonical query
 uint32-BE(len) || body_sha256              ; 32 bytes raw SHA-256 of body
@@ -35,7 +35,7 @@ uint32-BE(len) || host_user_id             ; UTF-8 string; empty allowed (len=0)
 uint32-BE(len) || key_id                   ; 32 bytes raw (pubkey thumbprint)
 ```
 
-`len` is the field's byte length as a big-endian unsigned 32-bit integer. Field ordering is fixed. The version tag `FPL1\n` prevents accidental signing-compatibility with any future protocol revision.
+`len` is the field's byte length as a big-endian unsigned 32-bit integer. Field ordering is fixed. The version tag `FPL2\n` prevents accidental signing-compatibility with adjacent protocol revisions. (FPL1 was the initial wire tag; the bump to FPL2 on 2026-05-25 went alongside the route-binding tightening on control endpoints — envelopes signed under FPL1 will not verify against the FPL2 server.)
 
 **Maximum field sizes** (enforced):
 - `method`: 16 bytes
@@ -120,4 +120,4 @@ Cross-platform parity is asserted at `test/continuity_auth/client/envelope_parit
 
 ## Forward compatibility
 
-The version tag `FPL1\n` is the protocol version. A v2 would emit a new tag (`FPL2\n`); the server can support both side-by-side during migration.
+The current version tag is `FPL2\n`. A future revision would emit a new tag (e.g. `FPL3\n`); the server can support adjacent tags side-by-side during migration. The wire tag is the only signal a verifier needs to discriminate versions — clients of any vintage embed it in the bytes they signed.

@@ -103,7 +103,8 @@ continuity-auth.server.observability.{metrics,logging}
 continuity-auth.server.{config,system,main} composition
 
 continuity-auth.client.{core,crypto,fingerprint,storage,tabs}  cljs client
-continuity-auth.admin.cli                   HMAC admin CLI (bin/cauth-admin)
+continuity-auth.client.{cli,dispatch,json}  bb-compatible client CLI (bin/continuity)
+continuity-auth.admin.cli                   HMAC admin CLI (continuity admin …)
 ```
 
 Boundaries:
@@ -132,3 +133,24 @@ Decisions that shaped the architecture and shouldn't be re-litigated without rea
 - **5-second event-loss window** on app crash (async transact). Documented in `risk-register #7` in the plan.
 - **Anonymous tier is intentionally low value.** Bootstrap is cheap; sybil gains nothing. Tier uplift requires sustained observation or host-link.
 - **Client lib bundle ≤ 40 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is 31.79 KB. Future fingerprint signals can blow this; we will favor signal removal over budget increase.
+
+## CI posture
+
+continuity-auth does not use hosted CI runners. The verification gate is `just ci`, run locally on the maintainer's machine before every push.
+
+The rationale is structural rather than performative. Hosted CI is, from the project's perspective, an extension of the trust boundary — a runner can execute arbitrary code with whatever secrets the workflow exposes, against whatever code the runner happens to checkout. For a project whose entire pitch is "don't trust signals you can't verify locally" — IP is advisory, browser fingerprint is advisory, the cryptographic key is the only authoritative axis — taking a hosted-runner dependency would be internally inconsistent.
+
+The recent CI-ecosystem incidents make this more than a stylistic preference. The tj-actions/changed-files compromise (March 2025) leaked credentials from ~23,000 repos via a single compromised tag. The Ultralytics PyPI compromise (December 2024) routed through a GitHub Actions cache poisoning chain. GitHub's own audit logs document several action-cache poisoning patterns. The defensive ask isn't "trust GitHub" but "trust every action you transitively use, the runner image, the cache, and the secrets surface." That ask is incompatible with what this project is trying to be.
+
+`just ci` runs:
+
+```
+clojure -M:lint-init   # populate clj-kondo cache from deps
+clojure -M:lint        # clj-kondo
+clojure -M:test        # kaocha (unit + adversarial + property + integration)
+clojure -T:build uber  # uberjar build (proves the production artifact assembles)
+node_modules/.bin/shadow-cljs release npm-module
+node scripts/check-bundle-size.mjs
+```
+
+There is no PR auto-verification signal — the maintainer is the gate. This trades the contributor convenience of "your PR is green or red" for a smaller attack surface. The accepted cost is real: it slows third-party contributions, makes status visible only to the maintainer until the PR is reviewed locally, and asks contributors to run `just ci` themselves before they push. If the project's contributor population grows to the point where this gate is the bottleneck, the discussion to re-open is "can we run a self-hosted runner under our trust assumptions" — not "can we adopt GitHub Actions on faith."

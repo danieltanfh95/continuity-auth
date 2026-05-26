@@ -30,7 +30,7 @@
 (defn- new-identity! [store]
   (let [iid (UUID/randomUUID)
         n0  (Date.)
-        rep (storage/transact!
+        _rep (storage/transact!
              store
              [{:identity/id iid
                :identity/created-at n0

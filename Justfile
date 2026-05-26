@@ -36,15 +36,15 @@ uberjar:
 # --- client (cljs) ---
 
 cljs-dev:
-    npx shadow-cljs watch client
+    node_modules/.bin/shadow-cljs watch client
 
 cljs-release:
-    npx shadow-cljs release npm-module
-    @bin/check-bundle-size
+    node_modules/.bin/shadow-cljs release npm-module
+    node scripts/check-bundle-size.mjs
 
 cljs-test:
-    npx shadow-cljs compile client-test
-    npx karma start karma.conf.js --single-run
+    node_modules/.bin/shadow-cljs compile client-test
+    node_modules/.bin/karma start karma.conf.cjs --single-run
 
 # --- docker ---
 
@@ -62,8 +62,20 @@ docker-down:
 load:
     k6 run test/load/verify.js
 
+# --- continuity bb client ---
+
+continuity-init:
+    CAUTH_ENDPOINT=${CAUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth init
+
+continuity-demo:
+    CAUTH_ENDPOINT=${CAUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth init
+    CAUTH_ENDPOINT=${CAUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth show
+    CAUTH_ENDPOINT=${CAUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth curl http://localhost:8080/healthz
+
 # --- meta ---
 
 all-tests: lint test cljs-test
 
-ci: lint-init lint test cljs-release cljs-test
+# Local CI gate. Run this before pushing; the project does not use hosted
+# runners. Single command, fails fast, no third-party trust.
+ci: lint-init lint test uberjar cljs-release cljs-test

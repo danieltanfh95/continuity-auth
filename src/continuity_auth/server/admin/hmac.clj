@@ -40,10 +40,10 @@
                          [id secret])))
                 keys))))))
 
-(defn ^bytes signing-input
+(defn signing-input
   "Build the canonical signing input bytes for an admin request. The
   shape is deterministic and matches the CLI's implementation."
-  [{:keys [method path body-sha256 ts nonce]}]
+  ^bytes [{:keys [method path body-sha256 ts nonce]}]
   (let [parts [method "\n" path "\n"
                (envelope/b64url-encode body-sha256) "\n"
                ts "\n"

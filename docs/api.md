@@ -28,7 +28,7 @@ Every signed request body carries an `envelope` object:
 
 ```json
 {
-  "v":           "FPL1\n",
+  "v":           "FPL2\n",
   "method":      "POST",
   "path":        "/v1/verify",
   "body_sha":    "<base64url(SHA-256(body))>",

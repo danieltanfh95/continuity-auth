@@ -1,6 +1,5 @@
 # continuity-auth
 
-[![ci](https://github.com/The-Continuity-Project/continuity-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/The-Continuity-Project/continuity-auth/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **A zero-auth trust service for rate-limiting and abuse decisions.** Lets a backend ask *"should I serve this request?"* without making the user log in, without showing a CAPTCHA, and without trusting IP or browser fingerprint alone.
@@ -60,8 +59,45 @@ Tiers are earned by sustained, low-anomaly observation. A fresh browser sits in 
 | Requires a trusted issuer | No | Yes (vendor) | No | Yes |
 | Decision granularity | per request | per session | per IP | per token |
 | Self-hostable | Yes | Mostly no | Yes | Some |
+| Works for curl / wget / daemons / mobile | Yes (any client that can hold a key) | No (JS-required) | Yes (no identity) | Anubis: no (JS-required PoW). Privacy Pass: issuer-dependent |
 
 These are not exclusive. continuity-auth pairs naturally with per-IP for the bottom of the rate-limit pyramid and with a CAPTCHA for the genuinely-suspicious top.
+
+## Non-browser clients
+
+continuity-auth's wire protocol is implementable from `openssl` + `curl` — there's no "headless mode," it's the same bytes a browser produces. The shell reference is at [`scripts/cauth-curl-example.sh`](scripts/cauth-curl-example.sh). The ergonomic equivalent is the babashka-based `continuity` CLI, installed via the one-liner in the Install section below.
+
+```bash
+# bytes-for-bytes reference (zero deps beyond openssl/curl/jq/xxd):
+CAUTH_ENDPOINT=http://localhost:8080 ./scripts/cauth-curl-example.sh
+
+# or via the unified binary:
+continuity auth init
+continuity auth curl -X POST -d '{"thing":1}' https://app.example.com/api/thing
+```
+
+Full walkthrough — including how this compares mechanism-by-mechanism with Anubis (SHA-256 PoW gate, JS-required, anonymous) — in [`docs/non-browser-clients.md`](docs/non-browser-clients.md).
+
+## Install the `continuity` CLI
+
+The unified `continuity` binary (built on babashka) is the ergonomic surface for non-browser callers. Pick one:
+
+```bash
+# one-liner (POSIX: linux/macos/wsl). Installs bb if missing.
+curl -fsSL https://raw.githubusercontent.com/The-Continuity-Project/continuity-auth/main/install.sh | sh
+
+# Homebrew tap (once registered):
+brew tap The-Continuity-Project/tap && brew install continuity
+
+# Windows PowerShell:
+iwr https://raw.githubusercontent.com/The-Continuity-Project/continuity-auth/main/install.ps1 -UseBasicParsing | iex
+
+# Manual: install babashka yourself (https://github.com/babashka/babashka), then clone this repo and put bin/continuity on PATH.
+```
+
+Verify: `continuity --version`. The binary exposes `continuity auth …` for the client surface and `continuity admin …` for the operator surface; both routes ship in the same install. See [`docs/non-browser-clients.md`](docs/non-browser-clients.md) for the full env-var contract.
+
+`continuity` is also the umbrella CLI for the trust-mechanism family; `continuity-auth` (this project) is its first member. The dispatcher does git-style plugin discovery — any `continuity-NAME` executable on PATH is reachable as `continuity NAME …` — so future members can ship as independent repos without touching the core dispatcher.
 
 ## Quick start
 
@@ -134,7 +170,7 @@ src/continuity_auth/        Clojure + ClojureScript sources
 test/                        kaocha (JVM) + cljs.test + karma + k6 load
 docs/                        api · architecture · ontology · threat-model · deployment
 docs/style/                  imported Clojure / correctness-framing conventions
-bin/                         task scripts (cauth-admin CLI)
+bin/                         continuity CLI (auth + admin subcommands)
 resources/                   aero config, logback
 scripts/check-bundle-size.mjs   CI gate on the gzipped bundle
 .plans/                      implementation plan (current + archive/)
@@ -161,12 +197,12 @@ just lint          # clj-kondo
 - Key rotation at `POST /v1/rotate-key` (grace-window aware).
 - Key revocation at `POST /v1/admin/revoke-key`.
 - HMAC-authenticated admin surface (`/v1/admin/*`) with constant-time compare + nonce replay defence.
-- Admin CLI (`bin/cauth-admin`) for revoke + config-dump.
+- Unified `continuity` CLI (`bin/continuity`) for client (`auth …`) and operator (`admin …`) surfaces.
 - Per-tier sliding-window rate limits.
 - Bootstrap per-IP rate limit (anti-spam on identity creation).
 - Body-size limit, Content-Length parsing, strict X-Forwarded-For extraction.
 - Prometheus `/metrics` with bearer-token auth (defaults to closed).
-- Threat-model coverage of T1–T18 (see [`docs/threat-model.md`](docs/threat-model.md)).
+- Threat-model coverage of T1–T19 (see [`docs/threat-model.md`](docs/threat-model.md)).
 
 **Deferred to v1.1** (specified in docs/api.md, not yet wired):
 
@@ -182,7 +218,7 @@ just lint          # clj-kondo
 
 If you're going to push this into production, read these in order:
 
-1. [`docs/threat-model.md`](docs/threat-model.md) — what we defend against (T1–T18), what's explicitly out of scope, where the boundaries are.
+1. [`docs/threat-model.md`](docs/threat-model.md) — what we defend against (T1–T19), what's explicitly out of scope, where the boundaries are.
 2. [`docs/ontology.md`](docs/ontology.md) — the data model: identity, tuple, pubkey, host-link, score, tier. The verify-path logic in §3 is the operating heart of the system.
 3. [`docs/architecture.md`](docs/architecture.md) — module structure, decisions, trade-offs, the data flow per request.
 4. [`docs/crypto-protocol.md`](docs/crypto-protocol.md) — envelope format, canonical bytes, signature algorithms.
@@ -198,6 +234,14 @@ Honest list of what this is *not* good at, so HN comments don't have to:
 - **The host application is the trust boundary for the user identity.** If the host's HMAC keys leak, the link-account path (v1.1) loses integrity; recovery is the host's responsibility.
 - **XSS on the host page is a signing oracle.** The key cannot be exfiltrated, but an attacker with JS execution can request signatures while the page is open. We mitigate via client-side rate caps and server-side anomaly metrics; we do not prevent XSS — the host does.
 - **Datalevin async transact has a bounded event-loss window on crash.** Statistical events (request logs) may lose up to a few seconds on hard kill; correctness-critical writes (score updates, nonces) are synchronous. The 5-second committed-cursor watermark is a v1.1 mitigation.
+
+## Verification
+
+This project does not use hosted CI runners. The gate is `just ci` (run locally before pushing), which covers lint + tests + uberjar build + cljs release + bundle-size check. Rationale: hosted runners are an out-of-band trust assumption that a project whose pitch is "don't trust signals you can't verify" should not import. The recent CI-ecosystem incidents (tj-actions/changed-files exfiltration, the Ultralytics PyPI compromise, GitHub Actions cache poisoning) are the kind of supply-chain bleed-through this posture exists to avoid. See [`docs/architecture.md`](docs/architecture.md) "CI posture" for the longer reasoning.
+
+```bash
+just ci   # the single gate; run before every push.
+```
 
 ## License
 

@@ -65,9 +65,9 @@
        (.encode (js/TextEncoder.) s))))
 
 #?(:clj
-   (defn ^bytes byte-array-of
+   (defn byte-array-of
      "Allocate a JVM byte array of the given length."
-     [n]
+     ^bytes [n]
      (byte-array n))
    :cljs
    (defn byte-array-of

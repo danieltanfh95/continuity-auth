@@ -82,11 +82,10 @@ clojure -M:dev
 **Preferred — admin CLI** (no DB downtime, audited via `:admin-revoke` trust event):
 
 ```bash
-bin/cauth-admin \
-  --server https://fl.example.com \
-  --key-id ops-01 \
-  --secret-file /etc/cauth/admin-ops-01.secret \
-  revoke-key <b64url-thumbprint>
+CAUTH_ENDPOINT=https://fl.example.com \
+CAUTH_ADMIN_KEY_ID=ops-01 \
+CAUTH_ADMIN_SECRET_FILE=/etc/cauth/admin-ops-01.secret \
+continuity admin revoke-key <b64url-thumbprint>
 ```
 
 The CLI signs with HMAC-SHA256; the server validates against the keystore at `CAUTH_ADMIN_HMAC_KEYS_PATH` (a `{:keys [{:id, :secret-b64}]}` EDN file loaded at startup). On success the pubkey's `:pubkey/revoked-at` is set to `now` and subsequent `/verify` returns `E_FORBIDDEN`.
@@ -105,8 +104,10 @@ clojure -M:dev
 ### Inspecting effective configuration
 
 ```bash
-bin/cauth-admin --server https://fl.example.com --key-id ops-01 \
-  --secret-file /etc/cauth/admin-ops-01.secret config | jq
+CAUTH_ENDPOINT=https://fl.example.com \
+CAUTH_ADMIN_KEY_ID=ops-01 \
+CAUTH_ADMIN_SECRET_FILE=/etc/cauth/admin-ops-01.secret \
+continuity admin config | jq
 ```
 
 This dumps the aero-resolved config (env vars applied). Sensitive fields (`:prometheus-bearer`, `:host-keys-path`, `:admin-keys-path`) come back as `"<redacted>"`. Use this to verify what the server *actually* loaded — useful when a redeploy did or didn't pick up a change you expected.
@@ -118,7 +119,7 @@ This dumps the aero-resolved config (env vars applied). Sensitive fields (`:prom
 1. Update `resources/config.edn` (or the env var override) in the source repo.
 2. Open a PR; review; merge.
 3. Redeploy. The new pod loads the new config on startup.
-4. Verify with `bin/cauth-admin … config`.
+4. Verify with `continuity admin config`.
 
 The only attributes that change at runtime are stored in the database (trust scores, pubkey revocations, identity tiers) and are mutated via the API.
 

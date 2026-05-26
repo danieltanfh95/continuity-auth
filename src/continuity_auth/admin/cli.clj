@@ -6,32 +6,33 @@
   this CLI's key-id; the secret-file holds the corresponding raw key
   (32 bytes, base64url-encoded).
 
-  Usage:
+  Usage (via the unified `continuity` binary):
 
-      cauth-admin --server URL --key-id ID --secret-file PATH SUBCOMMAND [ARGS]
+      continuity admin revoke-key <key-id-b64>    Force-revoke a pubkey
+      continuity admin config                     Dump effective server config
 
-      Subcommands:
-        revoke-key <key-id-b64>     Force-revoke a pubkey
-        config                      Dump effective server config
+  Connection details are taken from env vars (or, when invoked via
+  `clojure -M:admin`, from --server / --key-id / --secret-file flags):
 
-  The CLI prints the parsed JSON response to stdout and exits 0 on
-  success; on any non-2xx response or auth failure it prints the body
-  to stderr and exits 1."
+      CAUTH_ENDPOINT             server base URL (default http://localhost:8080)
+      CAUTH_ADMIN_KEY_ID         admin key identifier (matches keystore entry)
+      CAUTH_ADMIN_SECRET_FILE    path to file containing the admin secret
+
+  The CLI prints the parsed JSON response to stdout and returns exit 0
+  on success; on any non-2xx response or auth failure it prints the
+  body to stderr and returns 1."
   (:require
    [clojure.string :as str]
    [clojure.tools.cli :as cli]
+   [continuity-auth.client.json :as json]
    [continuity-auth.envelope :as envelope]
    [continuity-auth.server.admin.hmac :as hmac]
-   [continuity-auth.server.crypto.hash :as hash]
-   [jsonista.core :as json])
+   [continuity-auth.server.crypto.hash :as hash])
   (:import
    (java.net URI)
    (java.net.http HttpClient HttpRequest HttpRequest$Builder
                   HttpRequest$BodyPublishers HttpResponse$BodyHandlers)
    (java.security SecureRandom)))
-
-(def ^:private json-mapper
-  (json/object-mapper {:decode-key-fn keyword :encode-key-fn name}))
 
 (defn- random-nonce ^bytes []
   (let [b (byte-array 16)]
@@ -114,15 +115,14 @@
                     (HttpResponse$BodyHandlers/ofString))
         text (.body resp)]
     {:status (.statusCode resp)
-     :body   (try (json/read-value text json-mapper)
+     :body   (try (json/<-json text)
                   (catch Exception _ text))}))
 
 ;; -- subcommands -----------------------------------------------------------
 
 (defn- do-revoke-key [{:keys [server key-id secret]} key-id-b64]
   (let [path   "/v1/admin/revoke-key"
-        body   (.getBytes (json/write-value-as-string {:key_id key-id-b64} json-mapper)
-                          "UTF-8")
+        body   (.getBytes ^String (json/->json {:key_id key-id-b64}) "UTF-8")
         signed (sign-request {:method "POST" :path path :body body
                               :key-id key-id :secret secret})]
     (send-request (merge {:server server :method "POST" :path path :body body}
@@ -135,23 +135,106 @@
     (send-request (merge {:server server :method "GET" :path path}
                          signed))))
 
+;; -- context ---------------------------------------------------------------
+
+(defn- env-or [k]
+  (let [v (System/getenv k)]
+    (when-not (str/blank? v) v)))
+
+(defn- resolve-context
+  "Build the connection context. Flags override env vars; env vars
+  default to CAUTH_* equivalents. Returns {:server :key-id :secret} or
+  {:error \"reason\"}."
+  [{:keys [server key-id secret-file]}]
+  (let [server      (or server  (env-or "CAUTH_ENDPOINT")  "http://localhost:8080")
+        key-id      (or key-id  (env-or "CAUTH_ADMIN_KEY_ID"))
+        secret-file (or secret-file (env-or "CAUTH_ADMIN_SECRET_FILE"))]
+    (cond
+      (not key-id)
+      {:error "missing admin key-id (set CAUTH_ADMIN_KEY_ID or pass --key-id)"}
+
+      (not secret-file)
+      {:error "missing admin secret file (set CAUTH_ADMIN_SECRET_FILE or pass --secret-file)"}
+
+      :else
+      (try
+        {:server server
+         :key-id key-id
+         :secret (load-secret secret-file)}
+        (catch Exception e
+          {:error (str "could not load secret file " secret-file ": " (.getMessage e))})))))
+
+(defn- dispatch
+  "Run the named subcommand under the resolved context. Returns
+  {:status :body} from the server, or {:error \"...\"} on usage error."
+  [ctx subcommand args]
+  (case subcommand
+    :revoke-key
+    (if-let [k (first args)]
+      (do-revoke-key ctx k)
+      {:error "usage: revoke-key <key-id-b64>"})
+
+    :config
+    (do-config ctx)
+
+    {:error (str "unknown subcommand: " (name subcommand))}))
+
+(defn- print-result [result]
+  (cond
+    (:error result)
+    (do (binding [*out* *err*] (println (:error result))) 1)
+
+    :else
+    (do (println (json/->json (:body result)))
+        (if (= 200 (:status result)) 0 1))))
+
+;; -- public entry points --------------------------------------------------
+
+(defn run-admin
+  "Dispatcher-facing entry. Called by `continuity-auth.client.dispatch`
+  when the user invokes `continuity admin …`.
+
+  Argument shape:
+    {:subcommand :revoke-key | :config | nil
+     :args       [string…]
+     :opts       {…}}   ; reserved for future flag-passing
+
+  Returns an integer exit code; does not call System/exit."
+  [{:keys [subcommand args]}]
+  (cond
+    (nil? subcommand)
+    (do (binding [*out* *err*]
+          (println "usage: continuity admin <subcommand> [ARGS…]")
+          (println "subcommands: revoke-key, config"))
+        2)
+
+    :else
+    (let [ctx (resolve-context {})]
+      (if (:error ctx)
+        (do (binding [*out* *err*] (println (:error ctx))) 1)
+        (print-result (dispatch ctx subcommand args))))))
+
 ;; -- main ------------------------------------------------------------------
 
 (def ^:private cli-spec
   [["-s" "--server URL" "continuity-auth server base URL"
-    :default "http://localhost:8080"]
+    :default-fn (fn [_] (or (env-or "CAUTH_ENDPOINT") "http://localhost:8080"))]
    ["-k" "--key-id ID" "admin key identifier (matches keystore entry)"]
    ["-f" "--secret-file PATH" "path to file containing the admin secret"]
    ["-h" "--help"]])
 
 (defn- usage [summary]
-  (str "cauth-admin — continuity-auth admin CLI\n\n"
+  (str "continuity admin — continuity-auth admin CLI\n\n"
        "Options:\n" summary "\n\n"
        "Subcommands:\n"
        "  revoke-key <key-id-b64>     Force-revoke a pubkey\n"
-       "  config                       Dump effective server config\n"))
+       "  config                      Dump effective server config\n"))
 
-(defn -main [& args]
+(defn -main
+  "Entry for `clojure -M:admin` style invocation. Returns nothing useful;
+  calls System/exit with the proper code. Dispatcher-style callers
+  should use `run-admin` instead."
+  [& args]
   (let [{:keys [options arguments errors summary]} (cli/parse-opts args cli-spec)]
     (cond
       errors
@@ -161,19 +244,9 @@
       (do (println (usage summary)) (System/exit (if (:help options) 0 1)))
 
       :else
-      (let [{:keys [server key-id secret-file]} options
-            _      (when-not (and key-id secret-file)
-                     (binding [*out* *err*]
-                       (println "--key-id and --secret-file are required"))
-                     (System/exit 1))
-            secret (load-secret secret-file)
-            ctx    {:server server :key-id key-id :secret secret}
-            [sub & rest] arguments
-            result (case sub
-                     "revoke-key" (do-revoke-key ctx (first rest))
-                     "config"     (do-config ctx)
-                     (do (binding [*out* *err*]
-                           (println "unknown subcommand:" sub))
-                         (System/exit 1)))]
-        (println (json/write-value-as-string (:body result) json-mapper))
-        (System/exit (if (= 200 (:status result)) 0 1))))))
+      (let [ctx (resolve-context (select-keys options [:server :key-id :secret-file]))]
+        (if (:error ctx)
+          (do (binding [*out* *err*] (println (:error ctx))) (System/exit 1))
+          (let [[sub & rest] arguments
+                code (print-result (dispatch ctx (keyword (str/replace sub "_" "-")) rest))]
+            (System/exit code)))))))

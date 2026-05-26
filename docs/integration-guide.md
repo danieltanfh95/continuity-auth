@@ -124,4 +124,4 @@ No CORS configuration is needed on the host's own endpoints from continuity-auth
 
 The HTTP protocol is versioned at the path level (`/v1/...`). Breaking changes ship as `/v2/...` and run side by side during migration. The library auto-targets v1 until a major-version release.
 
-The envelope's literal version tag (`"FPL1\n"`, see `crypto-protocol.md`) prevents accidental cross-version signing.
+The envelope's literal version tag (`"FPL2\n"`, see `crypto-protocol.md`) prevents accidental cross-version signing.
