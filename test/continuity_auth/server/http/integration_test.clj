@@ -144,7 +144,13 @@
                                          :penalized {:1m 0  :5m 1   :1d 20}
                                          :banned    {:1m 0  :5m 0   :1d 1}}}
                   {:trusted-cidrs []
-                   :ip-header     "x-forwarded-for"})
+                   :ip-header     "x-forwarded-for"
+                   ;; Integration tests fire many bootstraps back-to-back from
+                   ;; one localhost IP. Disable per-IP exp-backoff (floor=0,
+                   ;; cap=0 ⇒ penalty=0) so the middleware is a no-op here;
+                   ;; the staircase is unit-tested in middleware_test.clj.
+                   :bootstrap-rl  {:floor-ms 0 :cap-ms 0
+                                   :doubling-factor 1 :reset-threshold-ms 0}})
          server (jetty/run-jetty handler {:port 0 :join? false})]
      (try
        (f {:store store
@@ -411,7 +417,9 @@
                   :tier-limits        {:anonymous {:1m 5}}}
                  {:trusted-cidrs  []
                   :ip-header      "x-forwarded-for"
-                  :max-body-bytes 128})
+                  :max-body-bytes 128
+                  :bootstrap-rl   {:floor-ms 0 :cap-ms 0
+                                   :doubling-factor 1 :reset-threshold-ms 0}})
         server (jetty/run-jetty handler {:port 0 :join? false})
         port   (-> server (.getConnectors) first (.getLocalPort))]
     (try

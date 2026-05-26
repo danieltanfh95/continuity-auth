@@ -28,7 +28,7 @@
   from `:server`, `:datalevin`, `:replay`, etc. of the aero-loaded
   config.edn."
   [{:keys [server datalevin replay ratelimit scoring trusted-proxies
-            limits observability grace hmac]
+            limits observability grace hmac bootstrap-rate-limit]
     :as config}]
   {:cauth/storage
    {:uri (:uri datalevin)}
@@ -54,19 +54,20 @@
    {:path (:admin-keys-path hmac)}
 
    :cauth/http-handler
-   {:storage         (ig/ref :cauth/storage)
-    :migrate         (ig/ref :cauth/migrate)
-    :clock           (ig/ref :cauth/clock)
-    :metrics         (ig/ref :cauth/metrics)
-    :admin-keystore  (ig/ref :cauth/admin-keystore)
-    :config          config
-    :replay          replay
-    :rate-windows    (:windows ratelimit)
-    :tier-limits     (:tiers ratelimit)
-    :scoring         scoring
-    :proxy           trusted-proxies
-    :limits          limits
-    :grace           grace}
+   {:storage             (ig/ref :cauth/storage)
+    :migrate             (ig/ref :cauth/migrate)
+    :clock               (ig/ref :cauth/clock)
+    :metrics             (ig/ref :cauth/metrics)
+    :admin-keystore      (ig/ref :cauth/admin-keystore)
+    :config              config
+    :replay              replay
+    :rate-windows        (:windows ratelimit)
+    :tier-limits         (:tiers ratelimit)
+    :scoring             scoring
+    :proxy               trusted-proxies
+    :limits              limits
+    :grace               grace
+    :bootstrap-rate-limit bootstrap-rate-limit}
 
    :cauth/http-server
    {:handler  (ig/ref :cauth/http-handler)
@@ -142,7 +143,8 @@
 
 (defmethod ig/init-key :cauth/http-handler
   [_ {:keys [storage clock metrics replay rate-windows tier-limits
-              scoring proxy limits grace admin-keystore config]}]
+              scoring proxy limits grace admin-keystore config
+              bootstrap-rate-limit]}]
   (router/make-handler
    {:store               storage
     :clock               clock
@@ -158,7 +160,8 @@
     :config              config}
    {:trusted-cidrs  (mw/parse-trusted-cidrs (:cidrs proxy))
     :ip-header      (:ip-header proxy)
-    :max-body-bytes (:max-body-bytes limits)}))
+    :max-body-bytes (:max-body-bytes limits)
+    :bootstrap-rl   (or bootstrap-rate-limit {})}))
 
 (defmethod ig/init-key :cauth/http-server
   [_ {:keys [handler host port join? max-threads]}]

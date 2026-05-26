@@ -48,16 +48,20 @@
    (error-response code 0))
   ([code retry-after-ms]
    {:pre [(contains? error-codes code)]}
-   {:status  (get code->status code 500)
-    :headers {"Content-Type"  "application/json; charset=utf-8"
-              "Cache-Control" "no-store"
-              ;; Always advertise the retry-after via header too — some
-              ;; HTTP intermediaries respect it (especially for 429).
-              "Retry-After"   (str (quot (long retry-after-ms) 1000))}
-    :body    (json/write-value-as-string
-              {:ok             false
-               :retry_after_ms (long retry-after-ms)
-               :code           (name code)})}))
+   (let [ms (long retry-after-ms)
+         ;; HTTP `Retry-After` is integer seconds and clients wait AT
+         ;; LEAST that long. Use ceiling so a 1500 ms penalty reports as
+         ;; "2", not "1" — under-reporting would let a polled client
+         ;; retry inside the penalty window.
+         secs (quot (+ ms 999) 1000)]
+     {:status  (get code->status code 500)
+      :headers {"Content-Type"  "application/json; charset=utf-8"
+                "Cache-Control" "no-store"
+                "Retry-After"   (str secs)}
+      :body    (json/write-value-as-string
+                {:ok             false
+                 :retry_after_ms ms
+                 :code           (name code)})})))
 
 (defn fail!
   "Throw an ex-info that will be converted to an error response by the

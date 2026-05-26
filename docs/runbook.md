@@ -66,6 +66,87 @@ clojure -M:dev
        [?e :identity/ever-tracked? ?ever]] (d/db conn))
 ```
 
+## Bootstrap rate-limit tuning
+
+`/v1/bootstrap` is gated by per-IP exponential backoff with optional
+IP-anchored signal multipliers. The defaults in [resources/config.edn](../resources/config.edn)
+ship safe for residential / shared-NAT traffic; adjust only on observed
+abuse or operator-confirmed compromise.
+
+### Defaults
+
+| Knob | Default | Env override | Effect |
+|---|---|---|---|
+| `:floor-ms`              | 1000 (1s)     | `CAUTH_BOOT_FLOOR_MS`     | first allow's penalty |
+| `:cap-ms`                | 60000 (60s)   | `CAUTH_BOOT_CAP_MS`       | absolute upper bound on any penalty |
+| `:doubling-factor`       | 2             | `CAUTH_BOOT_FACTOR`       | strike multiplier per consecutive allow |
+| `:reset-threshold-ms`    | 300000 (5m)   | `CAUTH_BOOT_RESET_MS`     | quiet-time before strike count resets |
+| `:signals-enabled?`      | true          | `CAUTH_BOOT_SIGNALS`      | gate the indexed AVET read |
+| `:signal-read-timeout-ms`| 50            | `CAUTH_BOOT_SIG_TIMEOUT`  | hard deadline on the read |
+| `:signal-cache-ttl-ms`   | 300000 (5m)   | `CAUTH_BOOT_SIG_TTL`      | per-IP cache freshness window |
+| `:datacenter-cidrs`      | `""` (empty)  | `CAUTH_BOOT_DC_CIDRS`     | comma-separated CIDR list, ×5 multiplier |
+
+### Datacenter / cloud-provider CIDR refresh
+
+The Tier 3 multiplier penalises IPs that fall inside a known datacenter or
+cloud-provider block. The project ships an empty list by default —
+opinionated curation belongs to the operator, not the library.
+
+Recommended sources (refresh ~monthly; cloud providers publish JSON or
+plain-text ranges):
+
+- **AWS** — `https://ip-ranges.amazonaws.com/ip-ranges.json` (filter on
+  `prefixes[].ip_prefix` where `region != global` if you want regional
+  granularity).
+- **Hetzner** — `https://docs.hetzner.com/cloud/general/ip-ranges/`
+  (a small fixed list).
+- **DigitalOcean** — `https://digitalocean.com/geo/google.csv`.
+- **OVH** — `https://github.com/ovh/public-cloud-ip-ranges` (community-
+  maintained mirror; verify against OVH's published feed).
+- **Google Cloud** — `https://www.gstatic.com/ipranges/cloud.json`.
+- **Microsoft Azure** — published weekly to `https://www.microsoft.com/...`
+  (download URL changes — check the Azure docs at refresh time).
+
+Set `CAUTH_BOOT_DC_CIDRS` to the concatenated comma-separated list:
+
+    CAUTH_BOOT_DC_CIDRS="3.0.0.0/8,5.9.0.0/16,46.4.0.0/16,..."
+
+The list is parsed at startup into a sorted vector of [low, high]
+inclusive-Long IPv4 ranges; per-bootstrap membership check is O(log N).
+**IPv4 only in v0.1** — IPv6 ranges are silently ignored.
+
+**False-positive cost.** A residential user on a known datacenter VPN
+exit will see the ×5 multiplier on bootstrap only. Once they bootstrap
+once, subsequent `/verify` is unaffected (the protocol keeps IP advisory
+everywhere except bootstrap). Acceptable trade-off for most deployments.
+
+**Refresh rhythm.** Cloud providers add new ranges several times a year.
+Stale lists fail safely (an attacker's new IP just falls through to Tier
+1 + Tier 2 signals — still defended, just no Tier 3 boost). A monthly
+refresh job is enough; no rush on missed updates.
+
+### Tuning under attack
+
+If an active attack escapes the defaults:
+
+1. **Drop `:cap-ms` to 300000** (5 minutes) — caps each identity at one
+   per 5 minutes per IP steady-state. Legit users behind shared NAT will
+   feel one delay before bootstrap.
+2. **Raise `:doubling-factor` to 3** — staircase climbs 1s → 3s → 9s →
+   27s → cap. More aggressive escalation against burst attackers.
+3. **Populate `:datacenter-cidrs`** if not already — see above.
+4. **Watch `cauth_bootstrap_signal_fallback_total`** — if it climbs, the
+   Datalevin index is slow; raise `:signal-read-timeout-ms` to 200 OR
+   set `:signals-enabled? false` to fall back to pure Tier 1.
+
+### Tuning for trusted-network deployments
+
+If `/v1/bootstrap` is only reachable from an authenticated reverse proxy
+or a private network where every IP is trusted, set
+`CAUTH_BOOT_FLOOR_MS=0` and `CAUTH_BOOT_CAP_MS=0` — the limiter is a
+no-op and the staircase collapses to no penalty. Recommended only when
+an upstream gate already bounds bootstrap rate.
+
 ## Capacity planning
 
 | Metric | Threshold | Action |

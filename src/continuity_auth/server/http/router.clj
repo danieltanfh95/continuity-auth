@@ -46,24 +46,44 @@
   (default 65 536, matching `config.edn :limits/:max-body-bytes`).
 
   The bootstrap rate-limit middleware sits INSIDE wrap-trusted-proxy-ip
-  so it can read `:cauth/client-ip`. Defaults: 5 bootstraps/minute/IP."
+  so it can read `:cauth/client-ip`. Tier 2 IP-anchored signals + Tier 3
+  datacenter-CIDR multiplier are composed here from the merged config —
+  see `mw/make-suspicion-fn`."
   [deps {:keys [trusted-cidrs ip-header max-body-bytes bootstrap-rl]
          :or {trusted-cidrs   []
               ip-header       "x-forwarded-for"
               max-body-bytes  65536
               bootstrap-rl    {}}}]
-  (-> (ring/ring-handler
-       (ring/router (make-routes deps))
-       (ring/create-default-handler
-        {:not-found
-         (fn [_] {:status 404
-                  :headers {"Content-Type" "application/json; charset=utf-8"}
-                  :body "{\"ok\":false,\"code\":\"E_NOT_FOUND\",\"retry_after_ms\":0}"})}))
-      (mw/wrap-bootstrap-rate-limit bootstrap-rl)
-      (mw/wrap-trusted-proxy-ip {:trusted-cidrs trusted-cidrs
-                                  :ip-header     ip-header})
-      mw/wrap-json-response
-      mw/wrap-json-body
-      (mw/wrap-body-size-limit max-body-bytes)
-      mw/wrap-error
-      mw/wrap-request-id))
+  (let [{:keys [signals-enabled? signal-read-timeout-ms signal-cache-ttl-ms
+                datacenter-cidrs]} bootstrap-rl
+        dc-ranges    (mw/parse-trusted-cidrs (or datacenter-cidrs ""))
+        suspicion-fn (mw/make-suspicion-fn
+                      {:storage          (:store deps)
+                       :signals-enabled? (if (some? signals-enabled?)
+                                           signals-enabled?
+                                           (some? (:store deps)))
+                       :cache-ttl-ms     (or signal-cache-ttl-ms 300000)
+                       :read-timeout-ms  (or signal-read-timeout-ms 50)
+                       :datacenter-cidrs dc-ranges
+                       :on-fallback      (fn [_kind _ex] nil)})
+        staircase-opts (-> bootstrap-rl
+                           (dissoc :signals-enabled?
+                                   :signal-read-timeout-ms
+                                   :signal-cache-ttl-ms
+                                   :datacenter-cidrs)
+                           (assoc :suspicion-fn suspicion-fn))]
+    (-> (ring/ring-handler
+         (ring/router (make-routes deps))
+         (ring/create-default-handler
+          {:not-found
+           (fn [_] {:status 404
+                    :headers {"Content-Type" "application/json; charset=utf-8"}
+                    :body "{\"ok\":false,\"code\":\"E_NOT_FOUND\",\"retry_after_ms\":0}"})}))
+        (mw/wrap-bootstrap-rate-limit staircase-opts)
+        (mw/wrap-trusted-proxy-ip {:trusted-cidrs trusted-cidrs
+                                    :ip-header     ip-header})
+        mw/wrap-json-response
+        mw/wrap-json-body
+        (mw/wrap-body-size-limit max-body-bytes)
+        mw/wrap-error
+        mw/wrap-request-id)))

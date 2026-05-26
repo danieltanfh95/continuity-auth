@@ -11,6 +11,7 @@
   (:require
    [clojure.string :as str]
    [continuity-auth.server.http.errors :as errors]
+   [continuity-auth.server.storage.protocol :as storage]
    [jsonista.core :as json]))
 
 (defn- random-id []
@@ -257,52 +258,273 @@
       (handler (assoc request :cauth/client-ip ip)))))
 
 ;; -- bootstrap rate limit --------------------------------------------------
+;;
+;; Time-as-resource framing: bootstrap is the one endpoint where the
+;; protocol has no identity yet, so the identity-keyed time-resource
+;; (tier accumulation, decay curve, host-link cooling-off) hasn't started
+;; accumulating. The defence is per-IP exponential backoff with a cap:
+;; legitimate users behind shared NAT pay at most floor-ms once before
+;; their bootstrap proceeds; an attacker spinning fresh containers from
+;; one IP climbs the staircase 1s → 2s → … → cap, capping at cap-ms per
+;; identity steady-state.
+;;
+;; Data shape (per-instance atom):
+;;
+;;   strike-state = {ip-string → {:last-attempt-ms  long   ; refreshed every attempt
+;;                                :penalty-until-ms long   ; gate; attempts before → 429
+;;                                :consecutive      long}} ; allows since last reset
+;;
+;; State transitions per /v1/bootstrap request:
+;;   - now-ms ≥ :penalty-until-ms (or no entry) → ALLOW. If quiet
+;;     ((now - last-attempt) > reset-threshold) reset :consecutive to 0;
+;;     otherwise keep it. Compute penalty-ms = min(cap, floor × factor^consec)
+;;     and set :penalty-until-ms = now + penalty-ms. Bump :consecutive.
+;;   - now-ms < :penalty-until-ms → DENY with retry-after =
+;;     (penalty-until-ms - now). Refresh :last-attempt-ms only; the strike
+;;     stands (denied requests do not compound the penalty).
+;;
+;; Entries whose :last-attempt-ms is older than :reset-threshold-ms are
+;; swept inline atomically with each request — bounded growth to
+;; recent-IP cardinality. Cross-instance fairness (Datalevin-backed
+;; buckets) is deferred to v1.1; see plan §"Out of scope" Tier 4.
+
+(defn- compute-penalty-ms
+  "Pure: doubling staircase capped at `cap-ms`, then multiplied by
+  `suspicion` (a positive double, typically in [0.5, 100]) and re-capped.
+
+  `consecutive` is the number of allows in the current burst BEFORE this
+  one (0 for the first allow after a quiet period). `suspicion = 1.0`
+  reduces to the pure exp-backoff staircase (Tier 1 behaviour).
+
+  Note: no primitive type hints — JVM limits prim-typed fns to ≤4 args."
+  [floor-ms cap-ms doubling-factor consecutive suspicion]
+  (let [pow (Math/pow (double doubling-factor) (double consecutive))
+        raw (long (* (double floor-ms) pow (double suspicion)))]
+    (min (long cap-ms) (max 0 raw))))
+
+;; -- Tier 2: IP-anchored suspicion multiplier --------------------------------
+;;
+;; Pure function from {:ip-age-seconds :identity-count :datacenter-hit?}
+;; to a multiplier on the staircase floor. Composition is multiplicative
+;; so any one strong signal can dominate; clamp to [0.5, 100] keeps a
+;; well-behaved IP at half the floor and an extreme attacker at no more
+;; than 100× the floor (still capped at cap-ms by compute-penalty-ms).
+;;
+;; Default curves come from the project plan §"Tier 2":
+;;   - ip-age 0/≤1h → ×10, ≤1d → ×3, ≤30d → ×1, ≤365d → ×0.7, > 1yr → ×0.5
+;;   - identity-count 0 → ×1, 1–5 → ×2, 6–49 → ×5, ≥50 → ×10
+;;   - datacenter-hit? → ×5 multiplicative on top
+;;
+;; Nil semantics: a nil :ip-age-seconds or :identity-count means "we have
+;; no signal for this axis" (e.g. storage read timed out / disabled) and
+;; the axis contributes ×1.0 (neutral). Distinguishes "unseen IP" (signal
+;; said 0 → ×10) from "couldn't read" (no signal → ×1).
+;;
+;; Operators who need different shapes can replace this function in v1.1
+;; (the config carries `:ip-age-multiplier-fn :default` as the slot).
+
+(defn- ip-age-multiplier ^double [ip-age-seconds]
+  (if (nil? ip-age-seconds)
+    1.0
+    (let [s (long ip-age-seconds)]
+      (cond
+        (<= s 0)         10.0
+        (<= s 3600)      10.0
+        (<= s 86400)      3.0
+        (<= s 2592000)    1.0
+        (<= s 31536000)   0.7
+        :else             0.5))))
+
+(defn- identity-count-multiplier ^double [identity-count]
+  (if (nil? identity-count)
+    1.0
+    (let [n (long identity-count)]
+      (cond
+        (<= n 0)   1.0
+        (<= n 5)   2.0
+        (<= n 49)  5.0
+        :else     10.0))))
+
+(defn bootstrap-suspicion-multiplier
+  "Pure: compose ip-age × identity-count × datacenter-hit? into a single
+  multiplier on the bootstrap penalty floor. Clamped to [0.5, 100]."
+  ^double [{:keys [ip-age-seconds identity-count datacenter-hit?]}]
+  (let [a   (ip-age-multiplier ip-age-seconds)
+        b   (identity-count-multiplier identity-count)
+        c   (if datacenter-hit? 5.0 1.0)
+        raw (* a b c)]
+    (-> raw (max 0.5) (min 100.0))))
+
+;; -- Tier 2 plumbing: signal cache + storage lookup with timeout ------------
+
+(defn- read-cached-signal
+  "Return cached `{:ip-age-seconds :identity-count :cached-at-ms}` for `ip`
+  if fresh, else nil."
+  [cache ip ^long now-ms ^long ttl-ms]
+  (when-let [entry (get cache ip)]
+    (when (< (- now-ms (long (:cached-at-ms entry))) ttl-ms)
+      entry)))
+
+(defn- fetch-signal!
+  "Run the storage signal lookup with a hard timeout. On success populate
+  the cache and return the signal map; on timeout / exception call
+  `on-fallback` and return nil. The caller composes the multiplier
+  separately so a fallback still benefits from the CIDR check."
+  [cache-atom store ip now-ms timeout-ms on-fallback]
+  (let [fut (future
+              (let [snap (storage/snapshot store)]
+                (storage/bootstrap-signals-for-ip store snap ip now-ms)))]
+    (try
+      (let [sig (deref fut timeout-ms ::timeout)]
+        (cond
+          (identical? sig ::timeout)
+          (do (future-cancel fut)
+              (on-fallback :timeout nil)
+              nil)
+
+          (nil? sig) nil
+
+          :else
+          (let [entry (assoc sig :cached-at-ms now-ms)]
+            (swap! cache-atom assoc ip entry)
+            entry)))
+      (catch Throwable t
+        (on-fallback :exception t)
+        nil))))
+
+(defn make-suspicion-fn
+  "Build a per-IP suspicion-multiplier function for `wrap-bootstrap-rate-limit`.
+
+  Returns `(fn [ip now-ms] → double)` that:
+    1. Looks up cached signals for `ip` (TTL = `:cache-ttl-ms`).
+    2. On cache miss + `:storage` present, runs an indexed read with
+       `:read-timeout-ms`; success → cache + use; failure → fall back to
+       neutral signals (the multiplier still includes the CIDR check).
+    3. Composes signals + CIDR membership via `bootstrap-suspicion-multiplier`.
+
+  Options:
+    :storage          Storage protocol instance (nil → signals disabled)
+    :signals-enabled? gate (default true if storage present)
+    :cache-ttl-ms     freshness window for cached signals (default 300_000)
+    :read-timeout-ms  hard deadline for the storage read (default 50)
+    :datacenter-cidrs vector of [lo hi] IPv4 ranges (parsed at startup)
+    :on-fallback      (fn [kind ex]) called on :timeout or :exception
+                       so callers can emit metrics (default no-op)"
+  [{:keys [storage signals-enabled? cache-ttl-ms read-timeout-ms
+           datacenter-cidrs on-fallback]
+    :or   {cache-ttl-ms     300000
+           read-timeout-ms  50
+           datacenter-cidrs []
+           on-fallback      (fn [_kind _ex])}}]
+  (let [enabled? (if (some? signals-enabled?)
+                   (boolean signals-enabled?)
+                   (some? storage))
+        ttl     (long cache-ttl-ms)
+        timeout (long read-timeout-ms)
+        cache   (atom {})]
+    (fn suspicion-fn [^String ip ^long now-ms]
+      (let [dch? (boolean (ip-in-cidrs? ip datacenter-cidrs))
+            base (when (and enabled? storage ip)
+                   (or (read-cached-signal @cache ip now-ms ttl)
+                       (fetch-signal! cache storage ip now-ms timeout on-fallback)))
+            sig  (assoc (or base {:ip-age-seconds nil :identity-count nil})
+                        :datacenter-hit? dch?)]
+        (bootstrap-suspicion-multiplier sig)))))
+
+(defn- bootstrap-tick
+  "Pure: given the OLD per-IP entry and the request's `now-ms` + config,
+  return the new entry to write. Outcome is re-derived from the OLD
+  entry's :penalty-until-ms vs `now-ms` so the caller can branch after
+  the swap without volatile.
+
+  `:suspicion` (default 1.0) is the Tier 2/3 multiplier applied to the
+  staircase floor; pass 1.0 for pure Tier 1 behaviour."
+  [entry ^long now-ms
+   {:keys [^long floor-ms ^long cap-ms ^long doubling-factor
+           ^long reset-threshold-ms suspicion]
+    :or   {suspicion 1.0}}]
+  (let [last-ms (:last-attempt-ms entry)
+        until   (long (or (:penalty-until-ms entry) 0))
+        consec  (long (or (:consecutive entry) 0))]
+    (if (>= now-ms until)
+      ;; ALLOW
+      (let [quiet?  (or (nil? last-ms)
+                        (> (- now-ms (long last-ms)) reset-threshold-ms))
+            consec' (if quiet? 0 consec)
+            penalty (compute-penalty-ms floor-ms cap-ms doubling-factor
+                                        consec' (double suspicion))]
+        {:last-attempt-ms  now-ms
+         :penalty-until-ms (+ now-ms penalty)
+         :consecutive      (inc consec')})
+      ;; DENY — refresh last-attempt-ms; strike stands.
+      (assoc entry :last-attempt-ms now-ms))))
+
+(defn- sweep-stale
+  "Drop entries whose :last-attempt-ms is older than `reset-threshold-ms`
+  from `now-ms`. Keeps strike-state bounded to recent-IP cardinality."
+  [state ^long now-ms ^long reset-threshold-ms]
+  (persistent!
+   (reduce-kv (fn [acc ip entry]
+                (let [last-ms (:last-attempt-ms entry)]
+                  (if (or (nil? last-ms)
+                          (> (- now-ms (long last-ms)) reset-threshold-ms))
+                    acc
+                    (assoc! acc ip entry))))
+              (transient {})
+              state)))
 
 (defn wrap-bootstrap-rate-limit
-  "Refuse POST /v1/bootstrap requests from any single IP that exceed
-  `limit-per-minute` within the last `window-ms`. Bootstrap is the
-  one endpoint where the request has no prior identity to charge
-  against — anyone can fire valid self-signed bootstraps and write
-  unbounded identity + pubkey + tuple rows otherwise.
+  "Rate-limit POST /v1/bootstrap with per-IP exponential backoff.
 
-  State shape (atom):  `{ip-string → {:count long :start-ms long}}`
-  - `:start-ms` is the wall-clock at which the IP's window began.
-  - `:count`    is the request count within that window.
+  Options (defaults match `:bootstrap-rate-limit` in resources/config.edn):
 
-  Stale entries are swept inline on each request. State grows with
-  recent-IP cardinality; bounded for realistic traffic, acceptable for
-  v1. A future iteration should back this with the Datalevin
-  `ratelimit/window.clj` infrastructure for cross-instance fairness.
+    :path                URI to gate                          \"/v1/bootstrap\"
+    :floor-ms            minimum penalty (first allow)        1000
+    :cap-ms              maximum penalty regardless of strike 60000
+    :doubling-factor     penalty multiplier per consecutive   2
+    :reset-threshold-ms  quiet-time → :consecutive resets     300000
+    :now-fn              clock injection (no-arg → ms)        #(System/currentTimeMillis)
+    :suspicion-fn        (fn [ip now-ms] → double) — Tier 2/3 multiplier
+                          composed by `make-suspicion-fn`. Default
+                          `(constantly 1.0)` ⇒ pure Tier 1 staircase.
 
-  Rejects with 429 / `E_RATE` BEFORE any JSON parsing, signature
-  verification, or DB write."
-  [handler {:keys [path limit-per-minute window-ms]
-            :or {path             "/v1/bootstrap"
-                 limit-per-minute 5
-                 window-ms        60000}}]
-  (let [state (atom {})]
+  Rejects with 429 / `E_RATE` and a `Retry-After` header carrying the
+  actual remaining milliseconds (ceiling-divided to seconds) BEFORE any
+  JSON parsing, signature verification, or DB write."
+  [handler {:keys [path floor-ms cap-ms doubling-factor reset-threshold-ms
+                   now-fn suspicion-fn]
+            :or   {path               "/v1/bootstrap"
+                   floor-ms           1000
+                   cap-ms             60000
+                   doubling-factor    2
+                   reset-threshold-ms 300000
+                   now-fn             #(System/currentTimeMillis)
+                   suspicion-fn       (constantly 1.0)}}]
+  (let [base-opts {:floor-ms           (long floor-ms)
+                   :cap-ms             (long cap-ms)
+                   :doubling-factor    (long doubling-factor)
+                   :reset-threshold-ms (long reset-threshold-ms)}
+        rth       (long reset-threshold-ms)
+        state     (atom {})]
     (fn [request]
       (if (and (= :post (:request-method request))
                (= path (:uri request)))
-        (let [ip     (or (:cauth/client-ip request) (:remote-addr request) "unknown")
-              now-ms (System/currentTimeMillis)
-              new-state
-              (swap! state
-                     (fn [s]
-                       (let [swept (into {}
-                                         (filter (fn [[_ {:keys [start-ms]}]]
-                                                   (< (- now-ms (long start-ms))
-                                                      (long window-ms)))
-                                                 s))
-                             {:keys [count start-ms]} (get swept ip)
-                             fresh? (or (nil? start-ms)
-                                        (>= (- now-ms (long start-ms))
-                                            (long window-ms)))
-                             c (if fresh? 1 (inc (long count)))
-                             ws (if fresh? now-ms start-ms)]
-                         (assoc swept ip {:count c :start-ms ws}))))
-              cnt (get-in new-state [ip :count])]
-          (if (> (long cnt) (long limit-per-minute))
-            (errors/error-response :E_RATE window-ms)
-            (handler request)))
+        (let [ip          (or (:cauth/client-ip request)
+                              (:remote-addr request)
+                              "unknown")
+              now-ms      (long (now-fn))
+              mult        (try (double (suspicion-fn ip now-ms))
+                               (catch Throwable _ 1.0))
+              opts        (assoc base-opts :suspicion mult)
+              [old _new]  (swap-vals!
+                           state
+                           (fn [s]
+                             (let [swept (sweep-stale s now-ms rth)]
+                               (assoc swept ip
+                                      (bootstrap-tick (get swept ip)
+                                                      now-ms opts)))))
+              old-until   (long (or (:penalty-until-ms (get old ip)) 0))]
+          (if (>= now-ms old-until)
+            (handler request)
+            (errors/error-response :E_RATE (- old-until now-ms))))
         (handler request)))))

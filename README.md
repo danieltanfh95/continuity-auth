@@ -226,7 +226,7 @@ just lint          # clj-kondo
 - HMAC-authenticated admin surface (`/v1/admin/*`) with constant-time compare + nonce replay defence.
 - Unified `continuity` CLI (`bin/continuity`) for client (`auth …`) and operator (`admin …`) surfaces.
 - Per-tier sliding-window rate limits.
-- Bootstrap per-IP rate limit (anti-spam on identity creation).
+- Bootstrap per-IP exponential-backoff rate-limit on `/v1/bootstrap` (anti-sybil on identity creation), with IP-anchored signals (IP age, identity-count-per-IP) and optional operator-supplied datacenter-CIDR multiplier. See [`docs/threat-model.md`](docs/threat-model.md) T14 and [`docs/runbook.md`](docs/runbook.md) §"Bootstrap rate-limit tuning".
 - Body-size limit, Content-Length parsing, strict X-Forwarded-For extraction.
 - Prometheus `/metrics` with bearer-token auth (defaults to closed).
 - Threat-model coverage of T1–T19 (see [`docs/threat-model.md`](docs/threat-model.md)).

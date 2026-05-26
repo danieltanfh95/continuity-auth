@@ -87,6 +87,27 @@
   (find-tuples-by-ip [_ snap ip]
     (find-tuples-by-attr (to-db snap) :tuple/ip ip))
 
+  (bootstrap-signals-for-ip [_ snap ip now-ms]
+    (let [db (to-db snap)
+          ;; Two indexed AVET queries on :tuple/ip — first-seen as Date
+          ;; (we take the minimum to get the earliest), and the distinct
+          ;; identity set (count its cardinality).
+          rows (d/q '[:find ?first-seen ?identity
+                      :in $ ?ip
+                      :where
+                      [?e :tuple/ip ?ip]
+                      [?e :tuple/first-seen ?first-seen]
+                      [?e :tuple/identity ?identity]]
+                    db ip)]
+      (if (empty? rows)
+        {:ip-age-seconds 0 :identity-count 0}
+        (let [earliest-ms (reduce min Long/MAX_VALUE
+                                  (map (fn [[^java.util.Date d _]] (.getTime d)) rows))
+              age-ms      (max 0 (- (long now-ms) (long earliest-ms)))
+              n-identity  (count (into #{} (map second) rows))]
+          {:ip-age-seconds (quot age-ms 1000)
+           :identity-count (long n-identity)}))))
+
   (find-tuples-by-fp [_ snap fp-bytes]
     (find-tuples-by-attr (to-db snap) :tuple/fp-digest fp-bytes))
 

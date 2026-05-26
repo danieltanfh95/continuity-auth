@@ -39,6 +39,20 @@
     "Indexed lookup: all tuples whose :tuple/ip = ip. Returns a seq of
     entity maps.")
 
+  (bootstrap-signals-for-ip
+    [this snapshot ip now-ms]
+    "Aggregate Tier-2 bootstrap-rate-limit signals for `ip` as of
+    `snapshot`. Returns:
+
+        {:ip-age-seconds long  ; (now-ms / 1000) - min(:tuple/first-seen-seconds),
+                               ; or 0 if the IP has never been seen
+         :identity-count long} ; distinct :tuple/identity over tuples
+                               ; with :tuple/ip = ip; 0 if never seen
+
+    Backed by the indexed AVET on :tuple/ip — should be O(log N) and
+    sub-millisecond on a healthy store. Used by the bootstrap rate-limit
+    middleware to compute the per-IP suspicion multiplier.")
+
   (find-tuples-by-fp
     [this snapshot fp-digest-bytes]
     "Indexed lookup: all tuples whose :tuple/fp-digest = fp-digest-bytes.
