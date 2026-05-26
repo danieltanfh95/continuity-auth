@@ -96,9 +96,9 @@
     (when (or (nil? bearer) (= "" bearer))
       ;; Codex M1: /metrics defaults to 401 when bearer is blank. We
       ;; refuse to ship an open metrics endpoint silently — operators
-      ;; either set FPL_PROM_BEARER or accept that /metrics is closed.
+      ;; either set CAUTH_PROM_BEARER or accept that /metrics is closed.
       (binding [*out* *err*]
-        (println "WARN [:cauth/metrics] metrics enabled but FPL_PROM_BEARER is blank;")
+        (println "WARN [:cauth/metrics] metrics enabled but CAUTH_PROM_BEARER is blank;")
         (println "     /metrics will return 401 to every request until a bearer is set.")))
     {:registry (metrics/make-registry)
      :bearer   bearer}))

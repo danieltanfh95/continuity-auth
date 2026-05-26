@@ -32,7 +32,7 @@
 ;; -- helpers ---------------------------------------------------------------
 
 (defn- temp-dir ^java.nio.file.Path []
-  (Files/createTempDirectory "fpl-int-" (into-array FileAttribute [])))
+  (Files/createTempDirectory "cauth-int-" (into-array FileAttribute [])))
 
 (defn- delete-recursively [^java.nio.file.Path p]
   (let [f (.toFile p)]
@@ -554,7 +554,7 @@
   (let [secret (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
         ks     {"ops-test" secret}
         cfg    {:server {:port 18080}
-                :hmac   {:admin-keys-path "/etc/fpl/admin.edn"}
+                :hmac   {:admin-keys-path "/etc/cauth/admin.edn"}
                 :observability {:prometheus-bearer "topsecret"}}]
     (with-running-system
       {:keystore ks :config cfg}
@@ -574,10 +574,10 @@
   ;;     stripped via the postwalk in `redact`
   (let [secret (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
         ks     {"ops-test" secret}
-        cfg    {:datalevin {:uri "dtlv://admin:hunter2@db.internal:8891/fpl"}
+        cfg    {:datalevin {:uri "dtlv://admin:hunter2@db.internal:8891/cauth"}
                 ;; Stash the same string under an innocuous key — the
                 ;; URI-userinfo postwalk must catch it too.
-                :misc {:notes "see dtlv://ops:s3cret@db.internal/fpl for details"}}]
+                :misc {:notes "see dtlv://ops:s3cret@db.internal/cauth for details"}}]
     (with-running-system
       {:keystore ks :config cfg}
       (fn [{:keys [port]}]
@@ -620,7 +620,7 @@
 
 (deftest verify-records-into-metrics-registry
   ;; Regression for the wiring claim in the security review: running a
-  ;; bootstrap+verify must produce a non-zero `fpl_verify_total`. Before
+  ;; bootstrap+verify must produce a non-zero `cauth_verify_total`. Before
   ;; wiring this counter, /metrics shipped flat zeros and T14 ("ops would
   ;; catch via metrics") was aspirational.
   (let [registry (metrics/make-registry)]
@@ -643,7 +643,7 @@
                      :fp-digest fp :method "POST" :path "/v1/verify"})
               vres (http-post port "/v1/verify" {:envelope v})
               _    (is (= 200 (:status vres)))
-              ;; Scrape /metrics and look for fpl_verify_total > 0.
+              ;; Scrape /metrics and look for cauth_verify_total > 0.
               client (HttpClient/newHttpClient)
               mr (.. (HttpRequest/newBuilder)
                      (uri (URI. (str "http://127.0.0.1:" port "/metrics")))
@@ -652,10 +652,10 @@
               mresp (.send client mr (HttpResponse$BodyHandlers/ofString))
               text  (.body mresp)]
           (is (= 200 (.statusCode mresp)))
-          (is (str/includes? text "fpl_verify_total")
-              "registry should expose fpl_verify_total")
-          (is (re-find #"fpl_verify_total\{[^}]*outcome=\"ok\"[^}]*\}\s+1\.0" text)
-              (str "expected fpl_verify_total{outcome=ok,...} = 1.0; got:\n" text)))))))
+          (is (str/includes? text "cauth_verify_total")
+              "registry should expose cauth_verify_total")
+          (is (re-find #"cauth_verify_total\{[^}]*outcome=\"ok\"[^}]*\}\s+1\.0" text)
+              (str "expected cauth_verify_total{outcome=ok,...} = 1.0; got:\n" text)))))))
 
 ;; -- Adversarial: route-binding (codex C1/C2/C3) --------------------------
 

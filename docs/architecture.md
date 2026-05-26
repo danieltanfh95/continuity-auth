@@ -131,4 +131,4 @@ Decisions that shaped the architecture and shouldn't be re-litigated without rea
 - **Sliding-window-counter approximation** can under-count by up to ~prev-bucket-count for non-uniform bursts at bucket edges. Documented in `ratelimit/window.clj`.
 - **5-second event-loss window** on app crash (async transact). Documented in `risk-register #7` in the plan.
 - **Anonymous tier is intentionally low value.** Bootstrap is cheap; sybil gains nothing. Tier uplift requires sustained observation or host-link.
-- **Client lib bundle ≤ 40 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is 33.29 KB. Future fingerprint signals can blow this; we will favor signal removal over budget increase.
+- **Client lib bundle ≤ 40 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is 31.79 KB. Future fingerprint signals can blow this; we will favor signal removal over budget increase.

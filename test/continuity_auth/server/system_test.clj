@@ -28,7 +28,7 @@
    (org.bouncycastle.crypto.signers Ed25519Signer)))
 
 (defn- temp-dir ^java.nio.file.Path []
-  (Files/createTempDirectory "fpl-sys-" (into-array FileAttribute [])))
+  (Files/createTempDirectory "cauth-sys-" (into-array FileAttribute [])))
 
 (defn- delete-recursively [^java.nio.file.Path p]
   (let [f (.toFile p)]

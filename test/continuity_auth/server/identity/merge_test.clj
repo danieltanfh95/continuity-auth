@@ -18,7 +18,7 @@
 ;; -- temp storage helper ---------------------------------------------------
 
 (defn- temp-dir ^java.nio.file.Path []
-  (Files/createTempDirectory "fpl-merge-test-" (into-array FileAttribute [])))
+  (Files/createTempDirectory "cauth-merge-test-" (into-array FileAttribute [])))
 
 (defn- delete-recursively [^java.nio.file.Path p]
   (let [f (.toFile p)]

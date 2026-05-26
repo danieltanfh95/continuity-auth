@@ -22,36 +22,36 @@ Two modes are supported transparently at the call site:
 
 ### Dev / staging — embedded LMDB
 
-`FPL_DTLV_URI=/var/data/continuity-auth.dtlv`
+`CAUTH_DTLV_URI=/var/data/continuity-auth.dtlv`
 
 Single-process. The app opens an LMDB env directly. Suitable for local development, single-instance staging, and CI.
 
 ### Production — Datalevin server mode
 
-`FPL_DTLV_URI=dtlv://user:pw@host:8898/continuity-auth`
+`CAUTH_DTLV_URI=dtlv://user:pw@host:8898/continuity-auth`
 
 Multi-instance. App instances are stateless and scale horizontally; all instances talk to the Datalevin server. For HA, run a 3-node Raft Datalevin cluster.
 
 ## Configuration
 
-Aero EDN, loaded at startup from `resources/config.edn` with the profile selected by `FPL_PROFILE` (or `--profile <kw>`).
+Aero EDN, loaded at startup from `resources/config.edn` with the profile selected by `CAUTH_PROFILE` (or `--profile <kw>`).
 
-Environment-variable overrides (all `FPL_*`):
+Environment-variable overrides (all `CAUTH_*`):
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `FPL_PROFILE` | `prod` | aero profile (dev/test/prod) |
-| `FPL_HTTP_HOST` | `0.0.0.0` | Jetty bind address |
-| `FPL_HTTP_PORT` | `8080` | Jetty port |
-| `FPL_HTTP_THREADS` | `64` | Jetty max threads |
-| `FPL_DTLV_URI` | `/tmp/continuity-auth-dev.dtlv` (dev), required (prod) | Datalevin URI |
-| `FPL_DTLV_DB_NAME` | `continuity-auth` | Datalevin DB name |
-| `FPL_DTLV_WRITE_MODE` | `async` | `:async` or `:sync` |
-| `FPL_TRUSTED_PROXY_CIDRS` | (empty) | Comma-separated CIDR allowlist for IP-header proxy |
-| `FPL_IP_HEADER` | `x-forwarded-for` | Header to read client IP from when behind trusted proxy |
-| `FPL_LOG_LEVEL` | `info` | mulog level |
-| `FPL_PROM_BEARER` | (empty) | Bearer token for `/metrics`; if empty, endpoint is open |
-| `FPL_OTEL_ENDPOINT` | (empty) | OTLP exporter endpoint; if empty, no trace export |
+| `CAUTH_PROFILE` | `prod` | aero profile (dev/test/prod) |
+| `CAUTH_HTTP_HOST` | `0.0.0.0` | Jetty bind address |
+| `CAUTH_HTTP_PORT` | `8080` | Jetty port |
+| `CAUTH_HTTP_THREADS` | `64` | Jetty max threads |
+| `CAUTH_DTLV_URI` | `/tmp/continuity-auth-dev.dtlv` (dev), required (prod) | Datalevin URI |
+| `CAUTH_DTLV_DB_NAME` | `continuity-auth` | Datalevin DB name |
+| `CAUTH_DTLV_WRITE_MODE` | `async` | `:async` or `:sync` |
+| `CAUTH_TRUSTED_PROXY_CIDRS` | (empty) | Comma-separated CIDR allowlist for IP-header proxy |
+| `CAUTH_IP_HEADER` | `x-forwarded-for` | Header to read client IP from when behind trusted proxy |
+| `CAUTH_LOG_LEVEL` | `info` | mulog level |
+| `CAUTH_PROM_BEARER` | (empty) | Bearer token for `/metrics`; if empty, endpoint is open |
+| `CAUTH_OTEL_ENDPOINT` | (empty) | OTLP exporter endpoint; if empty, no trace export |
 
 ## Migrations
 
@@ -64,14 +64,14 @@ The runner reads the persisted `:schema/version` and applies pending migrations 
 ## Observability
 
 - **Metrics**: `/metrics` exposes Prometheus text format. Scrape interval recommended 15 s. Key series:
-  - `fpl_verify_total{outcome, tier}` (counter)
-  - `fpl_verify_latency_seconds` (histogram)
-  - `fpl_signature_verify_failures_total{alg}` (counter)
-  - `fpl_nonce_replay_attempts_total` (counter)
-  - `fpl_cluster_merge_total{kind}` (counter)
-  - `fpl_identity_total{tier}` (gauge)
+  - `cauth_verify_total{outcome, tier}` (counter)
+  - `cauth_verify_latency_seconds` (histogram)
+  - `cauth_signature_verify_failures_total{alg}` (counter)
+  - `cauth_nonce_replay_attempts_total` (counter)
+  - `cauth_cluster_merge_total{kind}` (counter)
+  - `cauth_identity_total{tier}` (gauge)
 - **Logs**: mu/log structured JSON to stdout. Forward via the container runtime (Docker / Kubernetes) to your log sink.
-- **Tracing**: in v1.0 only the `X-Request-Id` correlation header is honoured (echoed back on every response). The OpenTelemetry SDK deps and `FPL_OTEL_ENDPOINT` config knob are loaded but no exporter is wired — see Open operator items below. Setting the env var without the exporter has no effect.
+- **Tracing**: in v1.0 only the `X-Request-Id` correlation header is honoured (echoed back on every response). The OpenTelemetry SDK deps and `CAUTH_OTEL_ENDPOINT` config knob are loaded but no exporter is wired — see Open operator items below. Setting the env var without the exporter has no effect.
 
 ## Health and readiness
 

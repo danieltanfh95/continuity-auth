@@ -15,7 +15,7 @@ The contract:
                 ┌────────────┐         ┌──────────────┐          ┌──────────────────┐
                 │  Host UI   │         │              │          │                  │
                 │            │         │  /api/...    │  ──S2S─→ │  POST /v1/verify │
-                │  + fpl-lib │ ──HTTP→ │  handler     │          │  (sig verified,  │
+                │  + client  │ ──HTTP→ │  handler     │          │  (sig verified,  │
                 │  (signs)   │         │  + enforce   │ ←────── │   tier decision) │
                 └────────────┘         └──────────────┘          └──────────────────┘
 ```
@@ -30,13 +30,13 @@ The contract:
 
 ```clojure
 ;; ClojureScript host:
-(require '[continuity-auth.client.core :as fpl])
+(require '[continuity-auth.client.core :as cauth])
 
-(fpl/init {:endpoint "https://fl.example.com"
+(cauth/init {:endpoint "https://fl.example.com"
            :host-id  "my-app"})
 
 ;; Outgoing request:
-(-> (fpl/sign-fetch {:method "POST"
+(-> (cauth/sign-fetch {:method "POST"
                       :path   "/api/foo"
                       :body   "..."})
     js/fetch)
@@ -44,11 +44,11 @@ The contract:
 
 ```javascript
 // JS/TS host (npm bundle):
-import * as fpl from "@continuity-auth/client";
+import * as cauth from "@continuity-auth/client";
 
-await fpl.init({endpoint: "https://fl.example.com", hostId: "my-app"});
+await cauth.init({endpoint: "https://fl.example.com", hostId: "my-app"});
 
-const signedRequest = await fpl.signFetch({
+const signedRequest = await cauth.signFetch({
   method: "POST",
   path:   "/api/foo",
   body:   "...",
@@ -110,13 +110,13 @@ No CORS configuration is needed on the host's own endpoints from continuity-auth
 ## What you *might* want to do
 
 - **Cache the verify response** if you're going to make multiple decisions about the same envelope (you shouldn't — each envelope has a unique nonce and is single-use).
-- **Pre-warm the keypair** by calling `fpl.init()` early in your app boot, so the first user action doesn't pay keygen latency.
+- **Pre-warm the keypair** by calling `cauth.init()` early in your app boot, so the first user action doesn't pay keygen latency.
 - **Expose your own `Retry-After` based on continuity-auth's `retry_after_ms`** to help your frontend render a sensible "please wait" UX.
 
 ## Cost / latency expectations
 
 - Round trip from your backend to fl-endpoint should be ≤ 5 ms (intra-region) for `/v1/verify`.
-- Library bundle adds ≤ 40 KB gzipped to your frontend (current build 33.29 KB).
+- Library bundle adds ≤ 40 KB gzipped to your frontend (current build 31.79 KB).
 - Keygen on first visit: ≤ 50 ms on a modern browser; happens once per device.
 - Signing per request: ≤ 5 ms on a modern browser.
 

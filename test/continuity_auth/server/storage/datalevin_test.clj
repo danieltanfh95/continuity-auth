@@ -15,7 +15,7 @@
    (java.util UUID)))
 
 (defn- temp-dir ^java.nio.file.Path []
-  (Files/createTempDirectory "fpl-test-" (into-array FileAttribute [])))
+  (Files/createTempDirectory "cauth-test-" (into-array FileAttribute [])))
 
 (defn- delete-recursively [^java.nio.file.Path p]
   (let [f (.toFile p)]

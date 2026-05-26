@@ -6,19 +6,19 @@
 {:continuity-auth/version "0.1.0"
 
  :server
- {:host        #or [#env FPL_HTTP_HOST "0.0.0.0"]
-  :port        #long #or [#env FPL_HTTP_PORT "8080"]
+ {:host        #or [#env CAUTH_HTTP_HOST "0.0.0.0"]
+  :port        #long #or [#env CAUTH_HTTP_PORT "8080"]
   :join?       false
-  :max-threads #long #or [#env FPL_HTTP_THREADS "64"]
+  :max-threads #long #or [#env CAUTH_HTTP_THREADS "64"]
   :send-server-version? false}
 
  :datalevin
- {:uri         #or [#env FPL_DTLV_URI
+ {:uri         #or [#env CAUTH_DTLV_URI
                     #profile {:dev  "/tmp/continuity-auth-dev.dtlv"
                               :test :inmem
                               :prod nil}]
-  :db-name     #or [#env FPL_DTLV_DB_NAME "continuity-auth"]
-  :write-mode  #keyword #or [#env FPL_DTLV_WRITE_MODE "async"]}  ; :async | :sync
+  :db-name     #or [#env CAUTH_DTLV_DB_NAME "continuity-auth"]
+  :write-mode  #keyword #or [#env CAUTH_DTLV_WRITE_MODE "async"]}  ; :async | :sync
 
  :replay
  {:timestamp-tolerance-seconds  60
@@ -52,25 +52,25 @@
  :trusted-proxies
  {;; Allowlist of trusted upstream CIDRs that we accept :ip-header from.
   ;; Empty means we use the direct connection IP. Configure carefully.
-  :cidrs       #or [#env FPL_TRUSTED_PROXY_CIDRS ""]   ; e.g. "10.0.0.0/8,fd00::/8"
-  :ip-header   #or [#env FPL_IP_HEADER "x-forwarded-for"]}
+  :cidrs       #or [#env CAUTH_TRUSTED_PROXY_CIDRS ""]   ; e.g. "10.0.0.0/8,fd00::/8"
+  :ip-header   #or [#env CAUTH_IP_HEADER "x-forwarded-for"]}
 
  :hmac
  {;; Per-integration HMAC keys. In production these come from a secret
   ;; manager and are loaded by a separate secrets-loader component.
-  :host-keys-path  #or [#env FPL_HOST_HMAC_KEYS_PATH ""]
-  :admin-keys-path #or [#env FPL_ADMIN_HMAC_KEYS_PATH ""]}
+  :host-keys-path  #or [#env CAUTH_HOST_HMAC_KEYS_PATH ""]
+  :admin-keys-path #or [#env CAUTH_ADMIN_HMAC_KEYS_PATH ""]}
 
  :observability
  {:metrics-enabled?     true
-  :prometheus-bearer    #or [#env FPL_PROM_BEARER ""]
-  :otel-endpoint        #or [#env FPL_OTEL_ENDPOINT ""]
+  :prometheus-bearer    #or [#env CAUTH_PROM_BEARER ""]
+  :otel-endpoint        #or [#env CAUTH_OTEL_ENDPOINT ""]
   :otel-service-name    "continuity-auth"
-  :log-level            #keyword #or [#env FPL_LOG_LEVEL "info"]}
+  :log-level            #keyword #or [#env CAUTH_LOG_LEVEL "info"]}
 
  :grace
- {:key-rotation-overlap-seconds  #long #or [#env FPL_KEY_ROT_GRACE_S "86400"]   ; 24h
-  :host-link-cooling-off-seconds #long #or [#env FPL_HOST_LINK_COOL_S "86400"]} ; 24h
+ {:key-rotation-overlap-seconds  #long #or [#env CAUTH_KEY_ROT_GRACE_S "86400"]   ; 24h
+  :host-link-cooling-off-seconds #long #or [#env CAUTH_HOST_LINK_COOL_S "86400"]} ; 24h
 
  :limits
  {:max-fp-signals-bytes  4096

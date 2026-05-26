@@ -1,11 +1,11 @@
 # continuity-auth
 
-[![ci](https://github.com/danieltanfh/continuity-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/danieltanfh/continuity-auth/actions/workflows/ci.yml)
+[![ci](https://github.com/The-Continuity-Project/continuity-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/The-Continuity-Project/continuity-auth/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **A zero-auth trust service for rate-limiting and abuse decisions.** Lets a backend ask *"should I serve this request?"* without making the user log in, without showing a CAPTCHA, and without trusting IP or browser fingerprint alone.
 
-> **Status:** v0.1.0 — feature-complete for v0.1 scope, tested end-to-end (292 tests / 1416 assertions / 0 failures; bundle 33.29 KB gzipped), not yet deployed at scale. Public API, wire envelope, and DB schema are stable for 0.1.x. v1.1 items are listed below.
+> **Status:** v0.1.0 — feature-complete for v0.1 scope, tested end-to-end (292 tests / 1416 assertions / 0 failures; bundle 31.79 KB gzipped), not yet deployed at scale. Public API, wire envelope, and DB schema are stable for 0.1.x. v1.1 items are listed below.
 
 ## What it is
 
@@ -15,7 +15,7 @@ The trust signal is a cryptographically anchored *device-continuity proof*: each
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│  client (cljs lib, 33 KB)        host backend          continuity-auth│
+│  client (cljs lib, 32 KB)        host backend          continuity-auth│
 │  ──────────────────────          ────────────          ────────────── │
 │                                                                       │
 │  1. generateKey({extractable: false})                                 │
@@ -67,9 +67,9 @@ These are not exclusive. continuity-auth pairs naturally with per-IP for the bot
 
 ```bash
 # clone + bring up the stack (Clojure not required on the host)
-git clone https://github.com/danieltanfh/continuity-auth.git
+git clone https://github.com/The-Continuity-Project/continuity-auth.git
 cd continuity-auth
-cp .env.example .env                # then edit FPL_DTLV_PASSWORD
+cp .env.example .env                # then edit CAUTH_DTLV_PASSWORD
 docker compose up -d
 
 # liveness check
@@ -81,17 +81,19 @@ curl -s http://localhost:8080/readyz
 # {"ready":true,"db_status":"ok"}
 ```
 
+> **Apple Silicon note:** the upstream `huahaiy/datalevin:0.9.22` image is a GraalVM native-image built for `x86_64` with AVX instructions, which Rosetta/qemu cannot emulate. On Apple Silicon, run the JVM dev path instead: `clojure -M:run` (uses embedded Datalevin at `/tmp/continuity-auth-dev.dtlv`). Linux `x86_64` and Linux/ARM64 with a future Datalevin arm64 release work via `docker compose up -d`.
+
 Browser-side integration (ESM):
 
 ```js
-import * as fpl from "@continuity-auth/client";  // 33 KB gzipped
+import * as cauth from "@continuity-auth/client";  // 32 KB gzipped
 
-await fpl.init({ endpoint: "https://fl.example.com", hostId: "my-app" });
+await cauth.init({ endpoint: "https://fl.example.com", hostId: "my-app" });
 
 // signFetch returns a fetch options bag with the signed envelope on the body.
 // Hand it to fetch yourself; the host backend forwards the envelope to
 // continuity-auth for the decision and enforces the result.
-const opts = await fpl.signFetch({
+const opts = await cauth.signFetch({
   method: "POST",
   path:   "/api/expensive-thing",
   body:   JSON.stringify(payload),
@@ -123,7 +125,7 @@ Full API in [`docs/api.md`](docs/api.md). Integration walk-through in [`docs/int
 - **Server:** Clojure 1.12 on JDK 21, Ring/Reitit, Jetty 11, Malli, Integrant.
 - **Storage:** Datalevin (LMDB, server mode in production).
 - **Crypto:** BouncyCastle for Ed25519/P-256 on JVM; Web Crypto SubtleCrypto in the browser.
-- **Client:** ClojureScript via shadow-cljs, `:esm` target, 33.29 KB gzipped.
+- **Client:** ClojureScript via shadow-cljs, `:esm` target, 31.79 KB gzipped.
 
 ## Layout
 

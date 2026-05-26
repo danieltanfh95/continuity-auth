@@ -20,10 +20,10 @@
   public key.
 
   Usage:
-      (require '[continuity-auth.client.core :as fpl])
-      (-> (fpl/init {:endpoint \"https://fl.example.com\"
+      (require '[continuity-auth.client.core :as cauth])
+      (-> (cauth/init {:endpoint \"https://fl.example.com\"
                      :host-id  \"my-app\"})
-          (.then (fn [_] (fpl/verify {:method \"POST\"
+          (.then (fn [_] (cauth/verify {:method \"POST\"
                                        :path   \"/api/foo\"
                                        :body   \"...\"}))))"
   (:require
@@ -186,7 +186,7 @@
   Returns a promise resolving to {:key-id <b64url string>, :alg <kw>}."
   [{:keys [endpoint host-id host-user-id]}]
   (when-not endpoint
-    (throw (ex-info "fpl/init requires :endpoint" {})))
+    (throw (ex-info "cauth/init requires :endpoint" {})))
   (p/let [{:keys [keypair pubkey-bytes key-id alg]} (load-or-generate-keypair)
           _ (swap! state assoc
                    :initialized? true
@@ -207,7 +207,7 @@
 
 (defn- ensure-initialized! []
   (when-not (:initialized? @state)
-    (throw (ex-info "fpl/init has not been called" {}))))
+    (throw (ex-info "cauth/init has not been called" {}))))
 
 (defn sign-fetch
   "Sign a request envelope. Returns a promise resolving to the wire

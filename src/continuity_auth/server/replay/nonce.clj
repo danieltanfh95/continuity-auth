@@ -101,7 +101,7 @@
                           (Thread/sleep (* 1000 (long interval-seconds)))
                           (catch InterruptedException _
                             (vreset! running? false))))))
-                  "fpl-nonce-sweeper")]
+                  "cauth-nonce-sweeper")]
     (.setDaemon thread true)
     (.start thread)
     (fn stop []

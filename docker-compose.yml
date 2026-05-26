@@ -1,8 +1,9 @@
 services:
   datalevin:
     image: huahaiy/datalevin:0.9.22
-    container_name: fpl-datalevin
-    command: ["server", "-r", "/data", "-p", "8898"]
+    platform: linux/amd64
+    container_name: cauth-datalevin
+    command: ["dtlv", "serv", "-r", "/data", "-p", "8898"]
     ports:
       - "8898:8898"
     volumes:
@@ -17,20 +18,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: fpl-app
+    container_name: cauth-app
     depends_on:
       datalevin:
         condition: service_healthy
     ports:
       - "8080:8080"
     environment:
-      FPL_HTTP_HOST: 0.0.0.0
-      FPL_HTTP_PORT: 8080
-      # Dev-default credential. Override FPL_DTLV_PASSWORD in .env (or your
+      CAUTH_HTTP_HOST: 0.0.0.0
+      CAUTH_HTTP_PORT: 8080
+      # Dev-default credential. Override CAUTH_DTLV_PASSWORD in .env (or your
       # secrets manager) before deploying anywhere a stranger can reach.
-      FPL_DTLV_URI: dtlv://admin:${FPL_DTLV_PASSWORD:-change-me}@datalevin:8898/continuity-auth
-      FPL_LOG_LEVEL: info
-      FPL_OTEL_ENDPOINT: ""
+      CAUTH_DTLV_URI: dtlv://admin:${CAUTH_DTLV_PASSWORD:-change-me}@datalevin:8898/continuity-auth
+      CAUTH_LOG_LEVEL: info
+      CAUTH_OTEL_ENDPOINT: ""
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 10s

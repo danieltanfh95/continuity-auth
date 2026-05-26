@@ -6,28 +6,28 @@ Operational guidance for on-call. For deployment, see `deployment.md`. For threa
 
 - **Healthcheck**: `curl https://fl.example.com/healthz` → 200
 - **Readiness**: `curl https://fl.example.com/readyz` → 200 with `{ready: true, db_status: "ok"}`
-- **Metrics**: `curl -H "Authorization: Bearer $FPL_PROM_BEARER" https://fl.example.com/metrics`
+- **Metrics**: `curl -H "Authorization: Bearer $CAUTH_PROM_BEARER" https://fl.example.com/metrics`
 - **Logs**: `kubectl logs -l app=continuity-auth --tail=200` (or your stack equivalent)
 
 ## Common alerts
 
-### `fpl_verify_latency_seconds{quantile="0.99"} > 0.025`
+### `cauth_verify_latency_seconds{quantile="0.99"} > 0.025`
 
 P99 verify latency exceeded 25 ms. Investigation:
 
-1. Check Datalevin write latency: `fpl_datalevin_write_latency_seconds`.
+1. Check Datalevin write latency: `cauth_datalevin_write_latency_seconds`.
 2. If Datalevin is the bottleneck, check the writer node's IO. LMDB single-writer means write contention here is expected under load; consider sharding (see deployment.md) if sustained.
 3. If verify latency is high but Datalevin is fine, the signature verify path may be GC-thrashing — check JVM `-XX:NativeMemoryTracking` or thread dumps.
 
-### `rate(fpl_signature_verify_failures_total[5m]) > 10`
+### `rate(cauth_signature_verify_failures_total[5m]) > 10`
 
 Elevated signature verify failures. Possible causes:
 
-1. **A new attacker probing**: check `fpl_nonce_replay_attempts_total` for correlation. If replays are also up, this is enumeration.
+1. **A new attacker probing**: check `cauth_nonce_replay_attempts_total` for correlation. If replays are also up, this is enumeration.
 2. **A bug in a host integration**: contact host owner; recent deploy of theirs?
 3. **Clock skew**: check the host's clock vs ours. Server-side `journalctl -u chrony` etc.
 
-### `rate(fpl_nonce_replay_attempts_total[5m]) > 50`
+### `rate(cauth_nonce_replay_attempts_total[5m]) > 50`
 
 Elevated replay attempts. This is suspicious. Action:
 
@@ -35,7 +35,7 @@ Elevated replay attempts. This is suspicious. Action:
 2. If the rate is sustained > 1 minute, alert security.
 3. Replays are correctly rejected; no immediate user impact, but indicates active enumeration.
 
-### `fpl_identity_total{tier="banned"}` is non-zero and growing
+### `cauth_identity_total{tier="banned"}` is non-zero and growing
 
 Identities being demoted to `:banned`. Investigation:
 
@@ -85,11 +85,11 @@ clojure -M:dev
 bin/cauth-admin \
   --server https://fl.example.com \
   --key-id ops-01 \
-  --secret-file /etc/fpl/admin-ops-01.secret \
+  --secret-file /etc/cauth/admin-ops-01.secret \
   revoke-key <b64url-thumbprint>
 ```
 
-The CLI signs with HMAC-SHA256; the server validates against the keystore at `FPL_ADMIN_HMAC_KEYS_PATH` (a `{:keys [{:id, :secret-b64}]}` EDN file loaded at startup). On success the pubkey's `:pubkey/revoked-at` is set to `now` and subsequent `/verify` returns `E_FORBIDDEN`.
+The CLI signs with HMAC-SHA256; the server validates against the keystore at `CAUTH_ADMIN_HMAC_KEYS_PATH` (a `{:keys [{:id, :secret-b64}]}` EDN file loaded at startup). On success the pubkey's `:pubkey/revoked-at` is set to `now` and subsequent `/verify` returns `E_FORBIDDEN`.
 
 **Fallback — direct DB** (when the server is down or the keystore is lost):
 
@@ -106,7 +106,7 @@ clojure -M:dev
 
 ```bash
 bin/cauth-admin --server https://fl.example.com --key-id ops-01 \
-  --secret-file /etc/fpl/admin-ops-01.secret config | jq
+  --secret-file /etc/cauth/admin-ops-01.secret config | jq
 ```
 
 This dumps the aero-resolved config (env vars applied). Sensitive fields (`:prometheus-bearer`, `:host-keys-path`, `:admin-keys-path`) come back as `"<redacted>"`. Use this to verify what the server *actually* loaded — useful when a redeploy did or didn't pick up a change you expected.
