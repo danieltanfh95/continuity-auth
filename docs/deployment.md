@@ -30,7 +30,7 @@ Single-process. The app opens an LMDB env directly. Suitable for local developme
 
 `CONTINUITY_AUTH_DTLV_URI=dtlv://user:pw@host:8898/continuity-auth`
 
-Multi-instance. App instances are stateless and scale horizontally; all instances talk to the Datalevin server. For HA, run a 3-node Raft Datalevin cluster.
+Multi-instance. App instances are stateless and scale horizontally. All instances talk to the Datalevin server. For HA, run a 3-node Raft Datalevin cluster.
 
 ## Configuration
 
@@ -59,7 +59,7 @@ Environment-variable overrides (all `CONTINUITY_AUTH_*`):
 clojure -M:migrate --uri "dtlv://user:pw@host:8898/continuity-auth"
 ```
 
-The runner reads the persisted `:schema/version` and applies pending migrations in order. The app refuses to start if the persisted version mismatches the code version — run the migrator first.
+The runner reads the persisted `:schema/version` and applies pending migrations in order. The app refuses to start if the persisted version mismatches the code version. Run the migrator first.
 
 ## Observability
 
@@ -71,12 +71,12 @@ The runner reads the persisted `:schema/version` and applies pending migrations 
   - `cauth_cluster_merge_total{kind}` (counter)
   - `cauth_identity_total{tier}` (gauge)
 - **Logs**: mu/log structured JSON to stdout. Forward via the container runtime (Docker / Kubernetes) to your log sink.
-- **Tracing**: in v1.0 only the `X-Request-Id` correlation header is honoured (echoed back on every response). The OpenTelemetry SDK deps and `CONTINUITY_AUTH_OTEL_ENDPOINT` config knob are loaded but no exporter is wired — see Open operator items below. Setting the env var without the exporter has no effect.
+- **Tracing**: in v1.0 only the `X-Request-Id` correlation header is honoured (echoed back on every response). The OpenTelemetry SDK deps and `CONTINUITY_AUTH_OTEL_ENDPOINT` config knob are loaded but no exporter is wired. See Open operator items below. Setting the env var without the exporter has no effect.
 
 ## Health and readiness
 
 - `GET /healthz` — liveness. 200 once Jetty is up.
-- `GET /readyz` — readiness. 200 when storage is reachable. Tie this into the load balancer's health check; do not route traffic if it returns 503.
+- `GET /readyz` — readiness. 200 when storage is reachable. Tie this into the load balancer's health check. Do not route traffic if it returns 503.
 
 ## Backup
 
@@ -113,7 +113,7 @@ Secrets are never logged. Use SIGHUP to re-read at runtime if your secret-manage
 
 The JVM shutdown hook in `main.clj` halts the integrant system in reverse order:
 
-1. Jetty stops accepting new connections; in-flight requests drain.
+1. Jetty stops accepting new connections. In-flight requests drain.
 2. Nonce sweeper stops.
 3. Storage closes.
 
@@ -131,5 +131,5 @@ SIGTERM is the standard signal. Allow ≥ 15 s for graceful drain before SIGKILL
 ## Open operator items (v1.0)
 
 - HA cluster failover is documented but not yet exercised in production by anyone other than the author. Plan a chaos test in your environment.
-- The trace exporter is OTLP; if your stack uses a different transport (Jaeger HTTP, Zipkin), wrap or replace `observability/tracing.clj` (not yet implemented as of this writing — task #14 partial).
-- The host-link path is specified but not yet implemented (task #16 pending). v1.0 ships without tier uplift via account; tier uplift via sustained pubkey-anchored history works.
+- The trace exporter is OTLP. If your stack uses a different transport (Jaeger HTTP, Zipkin), wrap or replace `observability/tracing.clj` (not yet implemented as of this writing, task #14 partial).
+- The host-link path is specified but not yet implemented (task #16 pending). v1.0 ships without tier uplift via account. Tier uplift via sustained pubkey-anchored history works.

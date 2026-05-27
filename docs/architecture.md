@@ -1,6 +1,6 @@
 # continuity-auth — architecture
 
-High-level overview. For the conceptual model see `ontology.md`. For the wire protocol see `crypto-protocol.md`. For the operational view see `deployment.md`.
+High-level overview. The conceptual model lives in `ontology.md`, the wire protocol in `crypto-protocol.md`, and the operational view in `deployment.md`.
 
 ## One picture
 
@@ -53,7 +53,7 @@ High-level overview. For the conceptual model see `ontology.md`. For the wire pr
 
 ## Key design points
 
-### The four axes are *not* equivalent
+### The four axes are not equivalent
 
 | Axis | Epistemic status | Role |
 |---|---|---|
@@ -62,7 +62,7 @@ High-level overview. For the conceptual model see `ontology.md`. For the wire pr
 | `ip` | Observed | Advisory only |
 | `fp-digest` | Claimed | Advisory only |
 
-This asymmetry is the heart of why continuity-auth resists poisoning attacks: an attacker who shares the victim's IP and fingerprint cannot enter the victim's cluster because they lack the victim's private key (regardless of substrate — browser non-extractable WebCrypto, CLI PEM, or hardware-anchored). See `ontology.md §2` and `threat-model.md §T3`, `§T6`.
+This asymmetry is the heart of why continuity-auth resists poisoning attacks: an attacker who shares the victim's IP and fingerprint cannot enter the victim's cluster because they lack the victim's private key (regardless of substrate, whether browser non-extractable WebCrypto, CLI PEM, or hardware-anchored). See `ontology.md §2` and `threat-model.md §T3`, `§T6`.
 
 ### Single read snapshot per decision
 
@@ -72,13 +72,13 @@ This is what makes the decision TOCTOU-safe (invariant I10) and keeps response l
 
 ### Rate-limit engine: token-bucket per tier per window
 
-Each `(identity, window)` pair has one token-bucket entity keyed by `:bucket/key = "<identity-eid>|<window>"`. Capacity is the per-tier per-window value from `:ratelimit/:tiers` in config (e.g. `:tracked {:1m 30 :5m 120 :1d 5000}`); leak rate is derived as `capacity / window-seconds`, which makes steady-state throughput identical to the prior sliding-window engine. The difference is the recovery shape under burst: `retry_after_ms` is the time until the next token leaks back into the bucket, not the time until the window edge. A trusted caller who exhausts a `:1m` budget recovers within a few hundred milliseconds rather than tens of seconds.
+Each `(identity, window)` pair has one token-bucket entity keyed by `:bucket/key = "<identity-eid>|<window>"`. Capacity is the per-tier per-window value from `:ratelimit/:tiers` in config (e.g. `:tracked {:1m 30 :5m 120 :1d 5000}`). Leak rate is derived as `capacity / window-seconds`, which makes steady-state throughput identical to the prior sliding-window engine. The difference is the recovery shape under burst: `retry_after_ms` is the time until the next token leaks back into the bucket, not the time until the window edge. A trusted caller who exhausts a `:1m` budget recovers within a few hundred milliseconds rather than tens of seconds.
 
-The verify response surfaces `:priority_weight` — a numeric proxy for tier that hosts can use as a weighted-fair-queuing weight. continuity-auth itself does not hold connections or implement priority admission (that would turn the trust service into a deployment liability); priority queuing belongs in the host backend or a sidecar, and `priority_weight` is the integration seam.
+The verify response surfaces `:priority_weight`, a numeric proxy for tier that hosts can use as a weighted-fair-queuing weight. continuity-auth itself does not hold connections or implement priority admission (that would turn the trust service into a deployment liability). Priority queuing belongs in the host backend or a sidecar, and `priority_weight` is the integration seam.
 
 ### Pure-where-possible, transactional-where-necessary
 
-Score deltas, tier projection, token-bucket arithmetic, envelope canonicalization are pure functions. Storage interaction is concentrated in two phases per request: read at the top, write asynchronously after the decision. This makes most of the system trivially testable without a real DB; only the integration layer needs ephemeral Datalevin.
+Score deltas, tier projection, token-bucket arithmetic, envelope canonicalization are pure functions. Storage interaction is concentrated in two phases per request: read at the top, write asynchronously after the decision. This makes most of the system trivially testable without a real DB. Only the integration layer needs ephemeral Datalevin.
 
 ### Genericity through protocols
 
@@ -87,7 +87,7 @@ Three Clojure protocols define the seams:
 - `TrustPolicy` — pluggable scoring
 - `Storage` — pluggable persistence
 
-In v1 only the default implementations exist; the protocols are documented as the v2 evolution path.
+In v1 only the default implementations exist. The protocols are documented as the v2 evolution path.
 
 ## Layer / namespace map
 
@@ -125,26 +125,26 @@ Boundaries:
 Decisions that shaped the architecture and shouldn't be re-litigated without reason.
 
 - **Datalevin as the only persistence.** No Redis, no Postgres. Smaller surface, single-source-of-truth, simpler ops.
-- **Length-prefixed binary signing input.** No JSON canonicalization for signatures — too many edge cases.
+- **Length-prefixed binary signing input.** No JSON canonicalization for signatures, too many edge cases.
 - **Non-extractable Web Crypto keys.** XSS cannot exfiltrate. Cost: legacy browser support requires the P-256 fallback.
-- **Async transact-after-response.** Decouples write latency from decision latency. Cost: bounded event loss on crash; acceptable for statistical event data.
+- **Async transact-after-response.** Decouples write latency from decision latency. Cost: bounded event loss on crash, acceptable for statistical event data.
 - **Strict `:db.unique/value` for nonces.** Upsert semantics (`:db.unique/identity`) would silently allow replays.
-- **Sliding-window-counter, not sliding-log.** O(1) per check; the approximation error is bounded and acceptable for opportunistic-abuse defense.
-- **No weak-attach in v1.** Cluster merge requires pubkey match or host-link attestation; no IP/fp-only continuity. Simpler, harder to poison.
+- **Sliding-window-counter, not sliding-log.** O(1) per check. The approximation error is bounded and acceptable for opportunistic-abuse defense.
+- **No weak-attach in v1.** Cluster merge requires pubkey match or host-link attestation, no IP/fp-only continuity. Simpler, harder to poison.
 - **ClojureScript-only client.** No hand-written JS facade. shadow-cljs `:target :npm-module` provides the JS distribution.
 
 ## Trade-offs accepted
 
 - **Sliding-window-counter approximation** can under-count by up to ~prev-bucket-count for non-uniform bursts at bucket edges. Documented in `ratelimit/window.clj`.
 - **5-second event-loss window** on app crash (async transact). Documented in `risk-register #7` in the plan.
-- **Anonymous tier is intentionally low value.** Bootstrap is cheap; sybil gains nothing. Tier uplift requires sustained observation or host-link.
-- **Client lib bundle ≤ 40 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is 31.79 KB. Future fingerprint signals can blow this; we will favor signal removal over budget increase.
+- **Anonymous tier is intentionally low value.** Bootstrap is cheap, sybil gains nothing. Tier uplift requires sustained observation or host-link.
+- **Client lib bundle ≤ 40 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is 31.79 KB. Future fingerprint signals can blow this. We will favor signal removal over budget increase.
 
 ## CI posture
 
 continuity-auth does not use hosted CI runners. The verification gate is `just ci`, run locally on the maintainer's machine before every push.
 
-The rationale is structural rather than performative. Hosted CI is, from the project's perspective, an extension of the trust boundary — a runner can execute arbitrary code with whatever secrets the workflow exposes, against whatever code the runner happens to checkout. For a project whose entire pitch is "don't trust signals you can't verify locally" — IP is advisory, browser fingerprint is advisory, the cryptographic key is the only authoritative axis — taking a hosted-runner dependency would be internally inconsistent.
+The rationale is structural, not stylistic. Hosted CI is, from the project's perspective, an extension of the trust boundary: a runner can execute arbitrary code with whatever secrets the workflow exposes, against whatever code the runner happens to checkout. For a project whose entire pitch is "don't trust signals you can't verify locally" (IP is advisory, browser fingerprint is advisory, the cryptographic key is the only authoritative axis), taking a hosted-runner dependency would be internally inconsistent.
 
 The recent CI-ecosystem incidents make this more than a stylistic preference. The tj-actions/changed-files compromise (March 2025) leaked credentials from ~23,000 repos via a single compromised tag. The Ultralytics PyPI compromise (December 2024) routed through a GitHub Actions cache poisoning chain. GitHub's own audit logs document several action-cache poisoning patterns. The defensive ask isn't "trust GitHub" but "trust every action you transitively use, the runner image, the cache, and the secrets surface." That ask is incompatible with what this project is trying to be.
 
@@ -159,4 +159,4 @@ node_modules/.bin/shadow-cljs release npm-module
 node scripts/check-bundle-size.mjs
 ```
 
-There is no PR auto-verification signal — the maintainer is the gate. This trades the contributor convenience of "your PR is green or red" for a smaller attack surface. The accepted cost is real: it slows third-party contributions, makes status visible only to the maintainer until the PR is reviewed locally, and asks contributors to run `just ci` themselves before they push. If the project's contributor population grows to the point where this gate is the bottleneck, the discussion to re-open is "can we run a self-hosted runner under our trust assumptions" — not "can we adopt GitHub Actions on faith."
+There is no PR auto-verification signal. The maintainer is the gate. This trades the contributor convenience of "your PR is green or red" for a smaller attack surface. The accepted cost is real: it slows third-party contributions, makes status visible only to the maintainer until the PR is reviewed locally, and asks contributors to run `just ci` themselves before they push. If the project's contributor population grows to the point where this gate is the bottleneck, the discussion to re-open is "can we run a self-hosted runner under our trust assumptions", not "can we adopt GitHub Actions on faith."

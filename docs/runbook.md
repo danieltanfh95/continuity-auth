@@ -16,7 +16,7 @@ Operational guidance for on-call. For deployment, see `deployment.md`. For threa
 P99 verify latency exceeded 25 ms. Investigation:
 
 1. Check Datalevin write latency: `cauth_datalevin_write_latency_seconds`.
-2. If Datalevin is the bottleneck, check the writer node's IO. LMDB single-writer means write contention here is expected under load; consider sharding (see deployment.md) if sustained.
+2. If Datalevin is the bottleneck, check the writer node's IO. LMDB single-writer means write contention here is expected under load. Consider sharding (see deployment.md) if sustained.
 3. If verify latency is high but Datalevin is fine, the signature verify path may be GC-thrashing. Check JVM `-XX:NativeMemoryTracking` or thread dumps.
 
 ### `rate(cauth_signature_verify_failures_total[5m]) > 10`
@@ -24,7 +24,7 @@ P99 verify latency exceeded 25 ms. Investigation:
 Elevated signature verify failures. Possible causes:
 
 1. **A new attacker probing**: check `cauth_nonce_replay_attempts_total` for correlation. If replays are also up, this is enumeration.
-2. **A bug in a host integration**: contact host owner; recent deploy of theirs?
+2. **A bug in a host integration**: contact host owner. Recent deploy of theirs?
 3. **Clock skew**: check the host's clock vs ours. Server-side `journalctl -u chrony` etc.
 
 ### `rate(cauth_nonce_replay_attempts_total[5m]) > 50`
@@ -33,7 +33,7 @@ Elevated replay attempts. This is suspicious. Action:
 
 1. Identify which integration is affected (correlate request-ids in logs).
 2. If the rate is sustained > 1 minute, alert security.
-3. Replays are correctly rejected; no immediate user impact, but indicates active enumeration.
+3. Replays are correctly rejected. No immediate user impact, but indicates active enumeration.
 
 ### `cauth_identity_total{tier="banned"}` is non-zero and growing
 
@@ -191,14 +191,14 @@ CONTINUITY_AUTH_ADMIN_SECRET_FILE=/etc/cauth/admin-ops-01.secret \
 continuity admin config | jq
 ```
 
-This dumps the aero-resolved config (env vars applied). Sensitive fields (`:prometheus-bearer`, `:host-keys-path`, `:admin-keys-path`) come back as `"<redacted>"`. Use this to verify what the server *actually* loaded, especially when a redeploy did or didn't pick up an expected change.
+This dumps the aero-resolved config (env vars applied). Sensitive fields (`:prometheus-bearer`, `:host-keys-path`, `:admin-keys-path`) come back as `"<redacted>"`. Use this to verify what the server actually loaded, especially when a redeploy did or didn't pick up an expected change.
 
 ### Changing configuration
 
 **continuity-auth has no live-config-mutation surface, by design.** Dynamic config is a footgun: it races with in-flight requests, defeats infrastructure-as-code audit, and produces deploys that don't match git. The canonical path is:
 
 1. Update `resources/config.edn` (or the env var override) in the source repo.
-2. Open a PR; review; merge.
+2. Open a PR, review, merge.
 3. Redeploy. The new pod loads the new config on startup.
 4. Verify with `continuity admin config`.
 
@@ -245,7 +245,7 @@ Look up the most recent `:request/identity` for the relevant identity-ref:
      (d/db conn) #uuid "...")
 ```
 
-Then check the bucket state. Each `(identity, window)` has at most one token-bucket entity; `:bucket/tokens` is the current count (capped at the tier's capacity) and `:bucket/last-refill-ms` is the epoch ms of the last check that consumed or observed it. `tokens-now = min(capacity, tokens + (now-ms - last-refill-ms) * leak-rate / 1000)`.
+Then check the bucket state. Each `(identity, window)` has at most one token-bucket entity. `:bucket/tokens` is the current count (capped at the tier's capacity) and `:bucket/last-refill-ms` is the epoch ms of the last check that consumed or observed it. `tokens-now = min(capacity, tokens + (now-ms - last-refill-ms) * leak-rate / 1000)`.
 
 ```clojure
 (d/q '[:find [(pull ?b [:bucket/window :bucket/tokens :bucket/last-refill-ms]) ...]

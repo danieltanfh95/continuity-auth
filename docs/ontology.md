@@ -1,6 +1,6 @@
 # continuity-auth — ontology
 
-The conceptual model. Everything else (schema, merge algorithm, rate-limit engine, API) is a projection of this. If something in this document is wrong, fix it here first; do not paper over it downstream.
+The conceptual model. Everything else (schema, merge algorithm, rate-limit engine, API) is a projection of this. If something in this document is wrong, fix it here first. Do not paper over it downstream.
 
 ## 1. Entities (the kinds of things in the system)
 
@@ -16,7 +16,7 @@ The conceptual model. Everything else (schema, merge algorithm, rate-limit engin
 | `Bucket` | Token-bucket accounting unit, one per `(identity, window)`. State: `:bucket/tokens` (current count, double) + `:bucket/last-refill-ms` (epoch ms). Tokens refill at `capacity / window-seconds`. | `(identity, window)` | No — bound to one identity |
 | `EraseStub` | Audit trace of a GDPR erasure. Hashed identity-id only; no user data. | EID + `:erase-stub/identity-hash` | Self (long-lived) |
 
-A *Person* is not an entity in this system. We track clusters; clusters are evidence-based proxies for persons. Two clusters can refer to one person (post-erasure regeneration, multiple devices without host-link); one cluster can in principle refer to multiple people (shared device with a shared keypair — browser profile shared across users, CLI `$CONTINUITY_AUTH_HOME` shared across operators). The system does not claim to identify persons.
+A "Person" is not an entity in this system. We track clusters, and clusters are evidence-based proxies for persons. Two clusters can refer to one person (post-erasure regeneration, multiple devices without host-link). One cluster can in principle refer to multiple people (shared device with a shared keypair, such as a browser profile shared across users or a CLI `$CONTINUITY_AUTH_HOME` shared across operators). The system does not claim to identify persons.
 
 ## 2. The four axes (and why they are not equivalent)
 
@@ -33,7 +33,7 @@ Operational rule that falls out of this table:
 
 > **Only cryptographic / cryptographic-by-proxy axes can *gate* cluster entry. Observed and claimed axes can only *corroborate* (positive evidence within a cluster) or *flag* (mismatch within a cluster).**
 
-This is the formal version of "pubkey-match is the only trustworthy merge signal" from the plan. Concretely: a request arriving with a verified signature against a pubkey already attached to identity A is *known* to be from a holder of A's key. A request arriving with `ip` or `fp-digest` matching a tuple in identity A's cluster is merely *consistent with* such an actor — but a determined attacker can fabricate either.
+This is the formal version of "pubkey-match is the only trustworthy merge signal" from the plan. Concretely: a request arriving with a verified signature against a pubkey already attached to identity A is known to be from a holder of A's key. A request arriving with `ip` or `fp-digest` matching a tuple in identity A's cluster is merely consistent with such an actor. A determined attacker can fabricate either.
 
 ## 3. Identity lifecycle
 
@@ -74,12 +74,12 @@ Notable:
 
 - `:rotated` is implicit: a pubkey is "rotated" when a successor with `:pubkey/rotation-of` referencing it exists AND `now < successor.created_at + grace_seconds`.
 - `:revoked` is explicit: `:pubkey/revoked-at` is set.
-- A revoked pubkey is retained in the DB for audit; signatures against it always fail (irrespective of grace).
+- A revoked pubkey is retained in the DB for audit. Signatures against it always fail (irrespective of grace).
 - Rotation produces *one* successor per predecessor at most. A second rotation creates a new successor that supersedes the first.
 
 ## 5. Tuple lifecycle
 
-Tuples are append-only inside an identity's cluster. They have no retraction except via erasure. They are *not* re-bound to a different identity except via the host-link merge described in §8.
+Tuples are append-only inside an identity's cluster. They have no retraction except via erasure. They are never re-bound to a different identity except via the host-link merge described in §8.
 
 A tuple's `:tuple/observation-count` and `:tuple/last-seen` are updated each time the same `(ip, fp, pubkey)` combination is re-observed. No other axis can be updated.
 
@@ -112,7 +112,7 @@ Score deltas:
 
 Each delta is recorded as a `TrustEvent` for audit.
 
-**The score is the only attribute that changes asynchronously**; all other identity attributes are either created-and-immutable or updated synchronously with bookkeeping.
+**The score is the only attribute that changes asynchronously.** All other identity attributes are either created-and-immutable or updated synchronously with bookkeeping.
 
 ## 7. Tuple membership rule (merge)
 
@@ -126,7 +126,7 @@ Given an incoming envelope:
    - Same `(ip, fp-digest)` as an existing tuple → observation, no new tuple. Score reinforcement.
    - Different — at least one axis differs from any existing tuple → new tuple in this identity's cluster. Score penalty according to which axes differ.
 
-The cluster never grows across identities through `ip` or `fp-digest` alone. Cross-axis matches against tuples in *different* identities are logged as advisory and possibly become an ops signal (a fingerprint shared by two clusters is *interesting*, but it does not merge them).
+The cluster never grows across identities through `ip` or `fp-digest` alone. Cross-axis matches against tuples in different identities are logged as advisory and possibly become an ops signal. A fingerprint shared by two clusters is a useful trace, but it does not merge them.
 
 ## 8. Cross-identity merge (host-link)
 
@@ -135,7 +135,7 @@ The cluster never grows across identities through `ip` or `fp-digest` alone. Cro
 > `POST /v1/link-account` is not wired as an HTTP handler in v0.1.0 — see
 > `docs/api.md` (planned, v1.1) and `docs/threat-model.md` T8/T14. Tier
 > uplift from anonymous → tracked in v0.1.0 happens via sustained
-> observation in the pubkey-anchored cluster (`score.clj`); the host-link path
+> observation in the pubkey-anchored cluster (`score.clj`). The host-link path
 > is purely additive.
 
 The intended-by-design way two identities would become one is via a host-link attestation that says "identity-A and identity-B both belong to host_user_id `X`". Operationally:
@@ -151,7 +151,7 @@ The intended-by-design way two identities would become one is via a host-link at
    - Buckets: max(A.bucket.count, B.bucket.count) per (window-size, start).
 4. If ops aborts within the cooling-off, the merge would be dropped and a `TrustEvent` recorded.
 
-The 24h is a *blast radius reducer*: a compromised host HMAC cannot merge arbitrary identities silently in the time it takes ops to detect. It does not eliminate the risk — it shrinks it.
+The 24h is a blast-radius reducer. A compromised host HMAC cannot merge arbitrary identities silently in the time it takes ops to detect. It does not eliminate the risk. It shrinks it.
 
 ## 9. The signed envelope as the system's truth-bearer
 
@@ -163,11 +163,11 @@ A request is admitted to the trust system iff:
 - `envelope.nonce` has not been seen in the last `nonce-ttl`,
 - The signature verifies against `envelope.key-id`.
 
-Anything else — score, tier, limits, response — is derived from this envelope plus what is already in the database. The envelope is the truth-bearer because it is the only artefact whose contents cannot be tampered with after the client produces it.
+Anything else (score, tier, limits, response) is derived from this envelope plus what is already in the database. The envelope is the truth-bearer because it is the only artefact whose contents cannot be tampered with after the client produces it.
 
 This is structurally identical to pdsa's "challenge-response with a client-derived secret", but generalized:
 - pdsa: one secret, one identity, register-then-prove.
-- continuity-auth: one secret (private key, substrate-specific) + corroborating signals, an identity per key, no separate register step — the first signed envelope auto-registers.
+- continuity-auth: one secret (private key, substrate-specific) + corroborating signals, an identity per key, no separate register step. The first signed envelope auto-registers.
 
 ## 10. Invariants
 
@@ -189,7 +189,7 @@ This is structurally identical to pdsa's "challenge-response with a client-deriv
 A request envelope makes implicit claims. We classify them by who can be held to them:
 
 - The **client** can claim its `fp-digest` and its `key-id`. The latter is bound by the signature: a claim of `key-id = K` is honored only if the signature verifies under `K`'s public key. The former is honored at face value but never used as a gating criterion.
-- The **client** cannot claim its `ip`. The server takes the IP from the network layer (or a trusted-proxy header configured by ops); the envelope's ts and nonce ride along but the IP does not.
+- The **client** cannot claim its `ip`. The server takes the IP from the network layer (or a trusted-proxy header configured by ops). The envelope's ts and nonce ride along but the IP does not.
 - The **host** can claim a `host-user-id → identity_ref` binding, gated by HMAC. The host *cannot* claim which user is signing (the client owns the private key).
 - The **server** observes: `ip`, `ts` (via its own clock plus tolerance), signature validity, nonce uniqueness.
 
@@ -197,7 +197,7 @@ Anything that violates this provenance ("the client claims its IP", "the host cl
 
 ## 12. Genericity ontology
 
-The above is the v1 instantiation. The system is generic in three dimensions, each captured by a protocol:
+The above is the v1 implementation. The system is generic in three dimensions, each captured by a protocol:
 
 | Protocol | What it generalizes | v1 implementations |
 |---|---|---|
@@ -210,35 +210,35 @@ A new axis is added by:
 2. Declaring its `weight` (`:cryptographic | :advisory | :weak`).
 3. Registering in config.
 
-The merge algorithm operates on `weight`, not on hardcoded axis names. Adding a new `:cryptographic` axis (e.g., mTLS client cert thumbprint, device attestation token) automatically participates in cluster gating; an `:advisory` axis only corroborates.
+The merge algorithm operates on `weight`, not on hardcoded axis names. Adding a new `:cryptographic` axis (e.g., mTLS client cert thumbprint, device attestation token) automatically participates in cluster gating. An `:advisory` axis only corroborates.
 
 ## 13. Out of scope (v1)
 
 These are deliberate omissions from the ontology:
 
 - **Person.** Not modeled. The system identifies clusters of evidence.
-- **Session.** Not modeled. The system is stateless across requests; the client-side key handle is the only persistent state.
+- **Session.** Not modeled. The system is stateless across requests. The client-side key handle is the only persistent state.
 - **Account.** Not modeled. Host accounts are referenced via `HostLink`, never owned.
 - **Trust transitivity.** Trust does not propagate from one identity to another via shared signals.
 - **Geo / ASN.** Not an axis in v1. Could be added via the `Axis` protocol in v2.
-- **Behavioral ML.** v1 has structural anomaly signals only (regular intervals, concurrency); no learned model.
+- **Behavioral ML.** v1 has structural anomaly signals only (regular intervals, concurrency), no learned model.
 - **Multi-tenancy.** v1 is single-host per deployment. Schema is namespaced so multi-tenant can be added without migration.
 
 ## 14. Glossary
 
 - **axis** — one named component of the trust vector (`ip`, `fp-digest`, `pubkey`, `host-user-id`).
-- **bootstrap** — the first signed request from a new keypair; creates an identity at anonymous tier.
+- **bootstrap** — the first signed request from a new keypair. Creates an identity at anonymous tier.
 - **claimed** — epistemic status of a signal whose value the server takes at face value from the client.
 - **cluster** — a synonym for an identity's set of attached tuples.
 - **cool-until** — the timestamp before which a pending host-link merge cannot commit.
 - **cryptographic** — epistemic status of a signal whose validity the server verifies cryptographically.
 - **delta** — a single trust-score change recorded as a `TrustEvent`.
 - **envelope** — the signed payload sent with every request to continuity-auth.
-- **identity** — a logical user cluster; the system's unit of trust accounting.
+- **identity** — a logical user cluster, the system's unit of trust accounting.
 - **key-id** — 32-byte SHA-256 thumbprint of a pubkey's canonical bytes.
-- **pubkey-match** — the case in which an envelope's `key-id` resolves to a pubkey already attached to an identity. (Formerly "LS-match", from the browser-localStorage era; renamed because the substrate-prefix embedded an assumption the protocol no longer relies on — see [`docs/non-browser-clients.md`](non-browser-clients.md).)
+- **pubkey-match** — the case in which an envelope's `key-id` resolves to a pubkey already attached to an identity. (Formerly "LS-match", from the browser-localStorage era. Renamed because the substrate-prefix embedded an assumption the protocol no longer relies on. See [`docs/non-browser-clients.md`](non-browser-clients.md).)
 - **observed** — epistemic status of a signal the server reads from out-of-band machinery (TCP/IP, clock).
-- **tier** — the discrete projection of trust score plus host-link state; determines rate limits.
+- **tier** — the discrete projection of trust score plus host-link state. Determines rate limits.
 - **tuple** — an `(ip, fp-digest, pubkey-ref)` combination observed once or more.
-- **verify (endpoint)** — `POST /v1/verify`; the main path. Returns a rate-limit decision.
+- **verify (endpoint)** — `POST /v1/verify`, the main path. Returns a rate-limit decision.
 - **verify (cryptographic)** — the operation of checking a signature against a pubkey.

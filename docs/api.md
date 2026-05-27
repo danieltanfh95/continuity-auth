@@ -2,13 +2,13 @@
 
 All endpoints are HTTPS, JSON over HTTP/1.1 or HTTP/2. UTF-8 throughout. Every request and response carries an `X-Request-Id` correlation header.
 
-The error model is uniform; all error responses share the shape:
+The error model is uniform. All error responses share the shape:
 
 ```json
 { "ok": false, "retry_after_ms": <long>, "code": "E_<CODE>" }
 ```
 
-`code` is a public-stable opaque token. We do not disclose which check failed (signature vs. replay vs. malformed input) — see `docs/threat-model.md` T10.
+`code` is a public-stable opaque token. We do not disclose which check failed (signature vs. replay vs. malformed input). See `docs/threat-model.md` T10.
 
 | Status | Code           | Meaning |
 |---|---|---|
@@ -79,7 +79,7 @@ Main rate-limit decision path. The host backend calls this for every request it 
 { "envelope": <envelope> }
 ```
 
-**Response (200 — allow):**
+**Response (200, allow):**
 ```json
 {
   "ok":              true,
@@ -90,9 +90,9 @@ Main rate-limit decision path. The host backend calls this for every request it 
 }
 ```
 
-**Response (429 — throttle):** standard error shape with `code = "E_RATE"`, `retry_after_ms > 0`, and `priority_weight` carried through so hosts can place the failed request into a tiered retry queue.
+**Response (429, throttle):** standard error shape with `code = "E_RATE"`, `retry_after_ms > 0`, and `priority_weight` carried through so hosts can place the failed request into a tiered retry queue.
 
-**`priority_weight`** is a host-side scheduling input — a relative weight for weighted fair queuing or priority admission. continuity-auth itself does **not** enforce priority; hosts may consult the weight to order their own queues or ignore it entirely. Default values mirror the `:1m` capacity ratios in `:ratelimit/:tiers`:
+**`priority_weight`** is a host-side scheduling input: a relative weight for weighted fair queuing or priority admission. continuity-auth itself does **not** enforce priority. Hosts may consult the weight to order their own queues or ignore it entirely. Default values mirror the `:1m` capacity ratios in `:ratelimit/:tiers`:
 
 | Tier         | `priority_weight` |
 |--------------|-------------------|
@@ -101,15 +101,15 @@ Main rate-limit decision path. The host backend calls this for every request it 
 | `penalized`  | 0.0               |
 | `banned`     | 0.0               |
 
-The numeric scale is advisory and non-normative — hosts that want a different ordering can map the `tier` string directly. The weight is included so the common case (weighted fair queuing keyed on tier) requires zero host-side configuration.
+The numeric scale is advisory and non-normative. Hosts that want a different ordering can map the `tier` string directly. The weight is included so the common case (weighted fair queuing keyed on tier) requires zero host-side configuration.
 
-**Rate-limit shape:** the per-tier limits in `:ratelimit/:tiers` are token-bucket capacities. Each window has its own bucket per identity with `leak_rate = capacity / window_seconds`; bursts up to `capacity` are absorbed and steady-state throughput equals `leak_rate`. `retry_after_ms` is the time until the next token leaks in, not the time until the window edge — trusted callers recover faster from short bursts than they did under the prior sliding-window engine.
+**Rate-limit shape:** the per-tier limits in `:ratelimit/:tiers` are token-bucket capacities. Each window has its own bucket per identity with `leak_rate = capacity / window_seconds`. Bursts up to `capacity` are absorbed and steady-state throughput equals `leak_rate`. `retry_after_ms` is the time until the next token leaks in, not the time until the window edge. Trusted callers recover faster from short bursts than they did under the prior sliding-window engine.
 
 **Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN` (revoked key, banned tier), `E_REPLAY`, `E_RATE`.
 
 ### `POST /v1/rotate-key`
 
-Replace the identity's signing keypair. Envelope signed with the OLD key carries the user's intent; the request body adds the new pubkey bytes and alg.
+Replace the identity's signing keypair. Envelope signed with the OLD key carries the user's intent. The request body adds the new pubkey bytes and alg.
 
 **Request body:**
 
@@ -129,7 +129,7 @@ Replace the identity's signing keypair. Envelope signed with the OLD key carries
   "grace_expires_at": "2026-05-25T13:34:56.789Z" }
 ```
 
-Within the grace window (config `:grace/:key-rotation-overlap-seconds`, default 86 400) BOTH keys verify; after the window, the old key is treated as revoked. The new pubkey is attached to the same identity (no merge, no cluster change).
+Within the grace window (config `:grace/:key-rotation-overlap-seconds`, default 86 400) BOTH keys verify. After the window, the old key is treated as revoked. The new pubkey is attached to the same identity (no merge, no cluster change).
 
 **Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN` (old key already revoked), `E_REPLAY`, `E_CONFLICT` (new pubkey already registered).
 
@@ -141,13 +141,13 @@ User-initiated revocation. Envelope signed with the key being revoked.
 
 **Response (200):** `{ "ok": true, "revoked_at": "2026-05-25T13:34:56.789Z" }`
 
-No grace window — the key is rejected from the next request onward. The identity is otherwise unchanged; the user can call `/v1/bootstrap` with a fresh keypair to start a new cluster.
+No grace window. The key is rejected from the next request onward. The identity is otherwise unchanged. The user can call `/v1/bootstrap` with a fresh keypair to start a new cluster.
 
 **Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN`, `E_REPLAY`.
 
 ### `POST /v1/admin/revoke-key`
 
-Operator-initiated revocation by thumbprint. HMAC-authenticated, no user signature required — this is the escape hatch for compromised keys whose holders can no longer (or won't) sign a `/v1/revoke-key` envelope.
+Operator-initiated revocation by thumbprint. HMAC-authenticated, no user signature required. This is the escape hatch for compromised keys whose holders can no longer (or won't) sign a `/v1/revoke-key` envelope.
 
 **Headers** (all required):
 
@@ -162,7 +162,7 @@ Operator-initiated revocation by thumbprint. HMAC-authenticated, no user signatu
 
 **Response (200):** `{ "ok": true, "revoked_at": "…" }`
 
-**Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED` (signature / clock-skew / unknown key-id), `E_FORBIDDEN` (admin keystore not configured — admin endpoints disabled), `E_REPLAY`, `E_NOT_FOUND` (thumbprint not in DB).
+**Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED` (signature / clock-skew / unknown key-id), `E_FORBIDDEN` (admin keystore not configured, so admin endpoints are disabled), `E_REPLAY`, `E_NOT_FOUND` (thumbprint not in DB).
 
 ### `GET /v1/admin/config`
 
@@ -180,7 +180,7 @@ GDPR right-to-erasure. Requires both host HMAC and a signed envelope from the id
 Liveness. Returns 200 `{ "ok": true }` once the process is accepting requests.
 
 ### `GET /readyz`
-Readiness. Returns 200 `{ "ready": true, "db_status": "ok" }` when storage is reachable; 503 with `db_status: "unreachable"` otherwise.
+Readiness. Returns 200 `{ "ready": true, "db_status": "ok" }` when storage is reachable, 503 with `db_status: "unreachable"` otherwise.
 
 ### `GET /metrics`
 Prometheus text exposition. If `:prometheus-bearer` is configured in `:observability`, the request must carry `Authorization: Bearer <token>`.
@@ -189,5 +189,5 @@ Prometheus text exposition. If `:prometheus-bearer` is configured in `:observabi
 
 - Timestamps are ISO 8601 UTC with millisecond precision (`2026-05-24T12:34:56.789Z`).
 - All byte fields are base64url **without** padding.
-- Idempotency: mutating endpoints accept `Idempotency-Key` header *(planned, v1.1)*; (key, body-hash) cached for 24 h.
+- Idempotency: mutating endpoints accept `Idempotency-Key` header *(planned, v1.1)*. (key, body-hash) cached for 24 h.
 - `Server-Timing` response header carries `latency;dur=<ms>` for observability.
