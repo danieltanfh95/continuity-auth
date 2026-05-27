@@ -112,9 +112,9 @@ Python, no Node, no Clojure required.
 
 ```bash
 # Install (one of):
-curl -fsSL https://raw.githubusercontent.com/The-Continuity-Project/continuity-auth/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/danieltanfh95/continuity-auth/main/install.sh | sh
 # or, on macOS — the Homebrew tap will be registered alongside the v0.1.0 tag:
-#   brew tap The-Continuity-Project/tap && brew install continuity
+#   brew tap danieltanfh95/tap && brew install continuity
 # until then, install from the formula path:
 #   brew install --HEAD --build-from-source ./Formula/continuity.rb
 

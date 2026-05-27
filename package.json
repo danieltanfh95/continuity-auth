@@ -34,12 +34,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/The-Continuity-Project/continuity-auth"
+    "url": "https://github.com/danieltanfh95/continuity-auth"
   },
   "author": "Daniel Tan",
-  "homepage": "https://github.com/The-Continuity-Project/continuity-auth",
+  "homepage": "https://github.com/danieltanfh95/continuity-auth",
   "bugs": {
-    "url": "https://github.com/The-Continuity-Project/continuity-auth/issues"
+    "url": "https://github.com/danieltanfh95/continuity-auth/issues"
   },
   "keywords": [
     "rate-limiting",

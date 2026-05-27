@@ -8,7 +8,7 @@
 #   3. Drop a `continuity` shim into ~/.local/bin/ (or $CONTINUITY_AUTH_BIN_DIR).
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/The-Continuity-Project/continuity-auth/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/danieltanfh95/continuity-auth/main/install.sh | sh
 #
 # Or, from a local clone:
 #   ./install.sh
@@ -27,7 +27,7 @@
 
 set -eu
 
-REPO="The-Continuity-Project/continuity-auth"
+REPO="danieltanfh95/continuity-auth"
 INSTALL_DIR="${CONTINUITY_AUTH_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/continuity-auth}"
 BIN_DIR="${CONTINUITY_AUTH_BIN_DIR:-$HOME/.local/bin}"
 REF="${CONTINUITY_AUTH_REF:-main}"

@@ -1,6 +1,6 @@
 # Homebrew formula for the `continuity` CLI.
 #
-# Ships as part of a tap: `brew tap The-Continuity-Project/tap` once the
+# Ships as part of a tap: `brew tap danieltanfh95/tap` once the
 # tap is registered. Until then, install from the formula path directly:
 #   brew install --HEAD --build-from-source ./Formula/continuity.rb
 #
@@ -13,13 +13,13 @@
 
 class Continuity < Formula
   desc "Cryptographic device-continuity client for continuity-auth"
-  homepage "https://github.com/The-Continuity-Project/continuity-auth"
-  url "https://github.com/The-Continuity-Project/continuity-auth/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/danieltanfh95/continuity-auth"
+  url "https://github.com/danieltanfh95/continuity-auth/archive/refs/tags/v0.1.0.tar.gz"
   # Update sha256 on each release; left placeholder so the formula can
   # bump alongside the tag without touching this file's structure.
   sha256 "PLACEHOLDER_SHA256_TO_BE_FILLED_AT_RELEASE"
   license "MIT"
-  head "https://github.com/The-Continuity-Project/continuity-auth.git", branch: "main"
+  head "https://github.com/danieltanfh95/continuity-auth.git", branch: "main"
 
   depends_on "borkdude/brew/babashka"
 

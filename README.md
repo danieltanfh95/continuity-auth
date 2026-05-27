@@ -58,7 +58,7 @@ Full doc index: [`docs/`](docs/README.md).
 ## Quick start
 
 ```bash
-git clone https://github.com/The-Continuity-Project/continuity-auth.git
+git clone https://github.com/danieltanfh95/continuity-auth.git
 cd continuity-auth
 cp .env.example .env                # then edit CONTINUITY_AUTH_DTLV_PASSWORD
 docker compose up -d

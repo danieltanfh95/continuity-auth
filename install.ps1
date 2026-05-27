@@ -5,7 +5,7 @@
 # the user PATH.
 #
 # Usage:
-#   iwr https://raw.githubusercontent.com/The-Continuity-Project/continuity-auth/main/install.ps1 -UseBasicParsing | iex
+#   iwr https://raw.githubusercontent.com/danieltanfh95/continuity-auth/main/install.ps1 -UseBasicParsing | iex
 #
 # Env vars / parameters (set via $env:CONTINUITY_AUTH_*):
 #   CONTINUITY_AUTH_INSTALL_DIR  Default $env:LOCALAPPDATA\continuity-auth
@@ -14,7 +14,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-$Repo        = 'The-Continuity-Project/continuity-auth'
+$Repo        = 'danieltanfh95/continuity-auth'
 $InstallDir  = if ($env:CONTINUITY_AUTH_INSTALL_DIR) { $env:CONTINUITY_AUTH_INSTALL_DIR } else { "$env:LOCALAPPDATA\continuity-auth" }
 $BinDir      = if ($env:CONTINUITY_AUTH_BIN_DIR) { $env:CONTINUITY_AUTH_BIN_DIR } else { "$env:LOCALAPPDATA\Programs\continuity" }
 $Ref         = if ($env:CONTINUITY_AUTH_REF) { $env:CONTINUITY_AUTH_REF } else { 'main' }
