@@ -14,9 +14,9 @@
   Connection details are taken from env vars (or, when invoked via
   `clojure -M:admin`, from --server / --key-id / --secret-file flags):
 
-      CAUTH_ENDPOINT             server base URL (default http://localhost:8080)
-      CAUTH_ADMIN_KEY_ID         admin key identifier (matches keystore entry)
-      CAUTH_ADMIN_SECRET_FILE    path to file containing the admin secret
+      CONTINUITY_AUTH_ENDPOINT             server base URL (default http://localhost:8080)
+      CONTINUITY_AUTH_ADMIN_KEY_ID         admin key identifier (matches keystore entry)
+      CONTINUITY_AUTH_ADMIN_SECRET_FILE    path to file containing the admin secret
 
   The CLI prints the parsed JSON response to stdout and returns exit 0
   on success; on any non-2xx response or auth failure it prints the
@@ -143,18 +143,18 @@
 
 (defn- resolve-context
   "Build the connection context. Flags override env vars; env vars
-  default to CAUTH_* equivalents. Returns {:server :key-id :secret} or
+  default to CONTINUITY_AUTH_* equivalents. Returns {:server :key-id :secret} or
   {:error \"reason\"}."
   [{:keys [server key-id secret-file]}]
-  (let [server      (or server  (env-or "CAUTH_ENDPOINT")  "http://localhost:8080")
-        key-id      (or key-id  (env-or "CAUTH_ADMIN_KEY_ID"))
-        secret-file (or secret-file (env-or "CAUTH_ADMIN_SECRET_FILE"))]
+  (let [server      (or server  (env-or "CONTINUITY_AUTH_ENDPOINT")  "http://localhost:8080")
+        key-id      (or key-id  (env-or "CONTINUITY_AUTH_ADMIN_KEY_ID"))
+        secret-file (or secret-file (env-or "CONTINUITY_AUTH_ADMIN_SECRET_FILE"))]
     (cond
       (not key-id)
-      {:error "missing admin key-id (set CAUTH_ADMIN_KEY_ID or pass --key-id)"}
+      {:error "missing admin key-id (set CONTINUITY_AUTH_ADMIN_KEY_ID or pass --key-id)"}
 
       (not secret-file)
-      {:error "missing admin secret file (set CAUTH_ADMIN_SECRET_FILE or pass --secret-file)"}
+      {:error "missing admin secret file (set CONTINUITY_AUTH_ADMIN_SECRET_FILE or pass --secret-file)"}
 
       :else
       (try
@@ -218,7 +218,7 @@
 
 (def ^:private cli-spec
   [["-s" "--server URL" "continuity-auth server base URL"
-    :default-fn (fn [_] (or (env-or "CAUTH_ENDPOINT") "http://localhost:8080"))]
+    :default-fn (fn [_] (or (env-or "CONTINUITY_AUTH_ENDPOINT") "http://localhost:8080"))]
    ["-k" "--key-id ID" "admin key identifier (matches keystore entry)"]
    ["-f" "--secret-file PATH" "path to file containing the admin secret"]
    ["-h" "--help"]])

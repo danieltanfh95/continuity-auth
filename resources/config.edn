@@ -6,19 +6,19 @@
 {:continuity-auth/version "0.1.0"
 
  :server
- {:host        #or [#env CAUTH_HTTP_HOST "0.0.0.0"]
-  :port        #long #or [#env CAUTH_HTTP_PORT "8080"]
+ {:host        #or [#env CONTINUITY_AUTH_HTTP_HOST "0.0.0.0"]
+  :port        #long #or [#env CONTINUITY_AUTH_HTTP_PORT "8080"]
   :join?       false
-  :max-threads #long #or [#env CAUTH_HTTP_THREADS "64"]
+  :max-threads #long #or [#env CONTINUITY_AUTH_HTTP_THREADS "64"]
   :send-server-version? false}
 
  :datalevin
- {:uri         #or [#env CAUTH_DTLV_URI
+ {:uri         #or [#env CONTINUITY_AUTH_DTLV_URI
                     #profile {:dev  "/tmp/continuity-auth-dev.dtlv"
                               :test :inmem
                               :prod nil}]
-  :db-name     #or [#env CAUTH_DTLV_DB_NAME "continuity-auth"]
-  :write-mode  #keyword #or [#env CAUTH_DTLV_WRITE_MODE "async"]}  ; :async | :sync
+  :db-name     #or [#env CONTINUITY_AUTH_DTLV_DB_NAME "continuity-auth"]
+  :write-mode  #keyword #or [#env CONTINUITY_AUTH_DTLV_WRITE_MODE "async"]}  ; :async | :sync
 
  :replay
  {:timestamp-tolerance-seconds  60
@@ -40,24 +40,24 @@
  ;; penalty (floor × factor^consecutive × suspicion, capped at cap);
  ;; a quiet period greater than reset-threshold resets the strike count.
  :bootstrap-rate-limit
- {:floor-ms              #long #or [#env CAUTH_BOOT_FLOOR_MS  "1000"]    ; 1s
-  :cap-ms                #long #or [#env CAUTH_BOOT_CAP_MS    "60000"]   ; 60s
-  :doubling-factor       #long #or [#env CAUTH_BOOT_FACTOR    "2"]
-  :reset-threshold-ms    #long #or [#env CAUTH_BOOT_RESET_MS  "300000"]  ; 5m
+ {:floor-ms              #long #or [#env CONTINUITY_AUTH_BOOT_FLOOR_MS  "1000"]    ; 1s
+  :cap-ms                #long #or [#env CONTINUITY_AUTH_BOOT_CAP_MS    "60000"]   ; 60s
+  :doubling-factor       #long #or [#env CONTINUITY_AUTH_BOOT_FACTOR    "2"]
+  :reset-threshold-ms    #long #or [#env CONTINUITY_AUTH_BOOT_RESET_MS  "300000"]  ; 5m
 
   ;; Tier 2 — IP-anchored signals. Cached aggressively per-IP; on read
   ;; failure / timeout the multiplier degrades to neutral (no penalty
   ;; inflation) and a `cauth_bootstrap_signal_fallback_total` metric ticks.
-  :signals-enabled?      #boolean #or [#env CAUTH_BOOT_SIGNALS "true"]
-  :signal-read-timeout-ms #long #or [#env CAUTH_BOOT_SIG_TIMEOUT "50"]
-  :signal-cache-ttl-ms    #long #or [#env CAUTH_BOOT_SIG_TTL   "300000"]  ; 5m
+  :signals-enabled?      #boolean #or [#env CONTINUITY_AUTH_BOOT_SIGNALS "true"]
+  :signal-read-timeout-ms #long #or [#env CONTINUITY_AUTH_BOOT_SIG_TIMEOUT "50"]
+  :signal-cache-ttl-ms    #long #or [#env CONTINUITY_AUTH_BOOT_SIG_TTL   "300000"]  ; 5m
 
   ;; Tier 3 — operator-supplied datacenter / cloud-provider CIDR list.
   ;; Empty by default; in production set to a comma-separated list of
   ;; CIDRs from your cloud providers' published ranges (Hetzner, AWS,
   ;; OVH, DigitalOcean — see docs/runbook.md §"Datacenter CIDR refresh").
   ;; IPs in this list get ×5 on the suspicion multiplier.
-  :datacenter-cidrs      #or [#env CAUTH_BOOT_DC_CIDRS ""]}
+  :datacenter-cidrs      #or [#env CONTINUITY_AUTH_BOOT_DC_CIDRS ""]}
 
  :scoring
  {:pubkey-match             0.05
@@ -76,42 +76,42 @@
  :trusted-proxies
  {;; Allowlist of trusted upstream CIDRs that we accept :ip-header from.
   ;; Empty means we use the direct connection IP. Configure carefully.
-  :cidrs       #or [#env CAUTH_TRUSTED_PROXY_CIDRS ""]   ; e.g. "10.0.0.0/8,fd00::/8"
-  :ip-header   #or [#env CAUTH_IP_HEADER "x-forwarded-for"]}
+  :cidrs       #or [#env CONTINUITY_AUTH_TRUSTED_PROXY_CIDRS ""]   ; e.g. "10.0.0.0/8,fd00::/8"
+  :ip-header   #or [#env CONTINUITY_AUTH_IP_HEADER "x-forwarded-for"]}
 
  :hmac
  {;; Per-integration HMAC keys. In production these come from a secret
   ;; manager and are loaded by a separate secrets-loader component.
-  :host-keys-path  #or [#env CAUTH_HOST_HMAC_KEYS_PATH ""]
-  :admin-keys-path #or [#env CAUTH_ADMIN_HMAC_KEYS_PATH ""]}
+  :host-keys-path  #or [#env CONTINUITY_AUTH_HOST_HMAC_KEYS_PATH ""]
+  :admin-keys-path #or [#env CONTINUITY_AUTH_ADMIN_HMAC_KEYS_PATH ""]}
 
  ;; Server-side IP-HMAC key. The raw client IP is hashed at HTTP ingress
  ;; (`wrap-trusted-proxy-ip`) under this key; only the hash is stored.
  ;; Precedence at startup (see `continuity-auth.server.crypto.ip-hmac`):
- ;;   1. `CAUTH_IP_HMAC_KEY` (base64, 32 bytes) — direct env-supplied secret
- ;;   2. `:key-path` (or `CAUTH_IP_HMAC_KEY_PATH`) — EDN keyfile on disk
+ ;;   1. `CONTINUITY_AUTH_IP_HMAC_KEY` (base64, 32 bytes) — direct env-supplied secret
+ ;;   2. `:key-path` (or `CONTINUITY_AUTH_IP_HMAC_KEY_PATH`) — EDN keyfile on disk
  ;;   3. If the path has no file: auto-generate 32 SecureRandom bytes,
  ;;      write the EDN file with mode 0600, use it. Subsequent restarts
  ;;      re-read the same file.
  ;; The file MUST persist across restarts; losing it fragments the
  ;; cluster grouping for all existing tuples.
  :ip-hmac
- {:key-path #or [#env CAUTH_IP_HMAC_KEY_PATH
+ {:key-path #or [#env CONTINUITY_AUTH_IP_HMAC_KEY_PATH
                  #profile {:dev  "/tmp/continuity-auth-dev-ip-hmac.key"
                            :test "/tmp/continuity-auth-test-ip-hmac.key"
                            :prod "/var/lib/continuity-auth/ip-hmac.key"}]
-  :key-b64  #or [#env CAUTH_IP_HMAC_KEY ""]}
+  :key-b64  #or [#env CONTINUITY_AUTH_IP_HMAC_KEY ""]}
 
  :observability
  {:metrics-enabled?     true
-  :prometheus-bearer    #or [#env CAUTH_PROM_BEARER ""]
-  :otel-endpoint        #or [#env CAUTH_OTEL_ENDPOINT ""]
+  :prometheus-bearer    #or [#env CONTINUITY_AUTH_PROM_BEARER ""]
+  :otel-endpoint        #or [#env CONTINUITY_AUTH_OTEL_ENDPOINT ""]
   :otel-service-name    "continuity-auth"
-  :log-level            #keyword #or [#env CAUTH_LOG_LEVEL "info"]}
+  :log-level            #keyword #or [#env CONTINUITY_AUTH_LOG_LEVEL "info"]}
 
  :grace
- {:key-rotation-overlap-seconds  #long #or [#env CAUTH_KEY_ROT_GRACE_S "86400"]   ; 24h
-  :host-link-cooling-off-seconds #long #or [#env CAUTH_HOST_LINK_COOL_S "86400"]} ; 24h
+ {:key-rotation-overlap-seconds  #long #or [#env CONTINUITY_AUTH_KEY_ROT_GRACE_S "86400"]   ; 24h
+  :host-link-cooling-off-seconds #long #or [#env CONTINUITY_AUTH_HOST_LINK_COOL_S "86400"]} ; 24h
 
  :limits
  {:max-fp-signals-bytes  4096

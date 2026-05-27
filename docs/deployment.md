@@ -22,36 +22,36 @@ Two modes are supported transparently at the call site:
 
 ### Dev / staging — embedded LMDB
 
-`CAUTH_DTLV_URI=/var/data/continuity-auth.dtlv`
+`CONTINUITY_AUTH_DTLV_URI=/var/data/continuity-auth.dtlv`
 
 Single-process. The app opens an LMDB env directly. Suitable for local development, single-instance staging, and CI.
 
 ### Production — Datalevin server mode
 
-`CAUTH_DTLV_URI=dtlv://user:pw@host:8898/continuity-auth`
+`CONTINUITY_AUTH_DTLV_URI=dtlv://user:pw@host:8898/continuity-auth`
 
 Multi-instance. App instances are stateless and scale horizontally; all instances talk to the Datalevin server. For HA, run a 3-node Raft Datalevin cluster.
 
 ## Configuration
 
-Aero EDN, loaded at startup from `resources/config.edn` with the profile selected by `CAUTH_PROFILE` (or `--profile <kw>`).
+Aero EDN, loaded at startup from `resources/config.edn` with the profile selected by `CONTINUITY_AUTH_PROFILE` (or `--profile <kw>`).
 
-Environment-variable overrides (all `CAUTH_*`):
+Environment-variable overrides (all `CONTINUITY_AUTH_*`):
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `CAUTH_PROFILE` | `prod` | aero profile (dev/test/prod) |
-| `CAUTH_HTTP_HOST` | `0.0.0.0` | Jetty bind address |
-| `CAUTH_HTTP_PORT` | `8080` | Jetty port |
-| `CAUTH_HTTP_THREADS` | `64` | Jetty max threads |
-| `CAUTH_DTLV_URI` | `/tmp/continuity-auth-dev.dtlv` (dev), required (prod) | Datalevin URI |
-| `CAUTH_DTLV_DB_NAME` | `continuity-auth` | Datalevin DB name |
-| `CAUTH_DTLV_WRITE_MODE` | `async` | `:async` or `:sync` |
-| `CAUTH_TRUSTED_PROXY_CIDRS` | (empty) | Comma-separated CIDR allowlist for IP-header proxy |
-| `CAUTH_IP_HEADER` | `x-forwarded-for` | Header to read client IP from when behind trusted proxy |
-| `CAUTH_LOG_LEVEL` | `info` | mulog level |
-| `CAUTH_PROM_BEARER` | (empty) | Bearer token for `/metrics`; if empty, endpoint is open |
-| `CAUTH_OTEL_ENDPOINT` | (empty) | OTLP exporter endpoint; if empty, no trace export |
+| `CONTINUITY_AUTH_PROFILE` | `prod` | aero profile (dev/test/prod) |
+| `CONTINUITY_AUTH_HTTP_HOST` | `0.0.0.0` | Jetty bind address |
+| `CONTINUITY_AUTH_HTTP_PORT` | `8080` | Jetty port |
+| `CONTINUITY_AUTH_HTTP_THREADS` | `64` | Jetty max threads |
+| `CONTINUITY_AUTH_DTLV_URI` | `/tmp/continuity-auth-dev.dtlv` (dev), required (prod) | Datalevin URI |
+| `CONTINUITY_AUTH_DTLV_DB_NAME` | `continuity-auth` | Datalevin DB name |
+| `CONTINUITY_AUTH_DTLV_WRITE_MODE` | `async` | `:async` or `:sync` |
+| `CONTINUITY_AUTH_TRUSTED_PROXY_CIDRS` | (empty) | Comma-separated CIDR allowlist for IP-header proxy |
+| `CONTINUITY_AUTH_IP_HEADER` | `x-forwarded-for` | Header to read client IP from when behind trusted proxy |
+| `CONTINUITY_AUTH_LOG_LEVEL` | `info` | mulog level |
+| `CONTINUITY_AUTH_PROM_BEARER` | (empty) | Bearer token for `/metrics`; if empty, endpoint is open |
+| `CONTINUITY_AUTH_OTEL_ENDPOINT` | (empty) | OTLP exporter endpoint; if empty, no trace export |
 
 ## Migrations
 
@@ -71,7 +71,7 @@ The runner reads the persisted `:schema/version` and applies pending migrations 
   - `cauth_cluster_merge_total{kind}` (counter)
   - `cauth_identity_total{tier}` (gauge)
 - **Logs**: mu/log structured JSON to stdout. Forward via the container runtime (Docker / Kubernetes) to your log sink.
-- **Tracing**: in v1.0 only the `X-Request-Id` correlation header is honoured (echoed back on every response). The OpenTelemetry SDK deps and `CAUTH_OTEL_ENDPOINT` config knob are loaded but no exporter is wired — see Open operator items below. Setting the env var without the exporter has no effect.
+- **Tracing**: in v1.0 only the `X-Request-Id` correlation header is honoured (echoed back on every response). The OpenTelemetry SDK deps and `CONTINUITY_AUTH_OTEL_ENDPOINT` config knob are loaded but no exporter is wired — see Open operator items below. Setting the env var without the exporter has no effect.
 
 ## Health and readiness
 

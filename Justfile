@@ -65,12 +65,12 @@ load:
 # --- continuity bb client ---
 
 continuity-init:
-    CAUTH_ENDPOINT=${CAUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth init
+    CONTINUITY_AUTH_ENDPOINT=${CONTINUITY_AUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth init
 
 continuity-demo:
-    CAUTH_ENDPOINT=${CAUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth init
-    CAUTH_ENDPOINT=${CAUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth show
-    CAUTH_ENDPOINT=${CAUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth curl http://localhost:8080/healthz
+    CONTINUITY_AUTH_ENDPOINT=${CONTINUITY_AUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth init
+    CONTINUITY_AUTH_ENDPOINT=${CONTINUITY_AUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth show
+    CONTINUITY_AUTH_ENDPOINT=${CONTINUITY_AUTH_ENDPOINT:-http://localhost:8080} bin/continuity auth curl http://localhost:8080/healthz
 
 # --- meta ---
 

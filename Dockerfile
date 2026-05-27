@@ -21,8 +21,8 @@ COPY --from=build /build/app.jsa /app/app.jsa
 COPY resources/logback.xml /app/logback.xml
 
 ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75 -XX:SharedArchiveFile=/app/app.jsa -Dlogback.configurationFile=/app/logback.xml -Dfile.encoding=UTF-8"
-ENV CAUTH_HTTP_HOST=0.0.0.0
-ENV CAUTH_HTTP_PORT=8080
+ENV CONTINUITY_AUTH_HTTP_HOST=0.0.0.0
+ENV CONTINUITY_AUTH_HTTP_PORT=8080
 
 USER cauth
 EXPOSE 8080

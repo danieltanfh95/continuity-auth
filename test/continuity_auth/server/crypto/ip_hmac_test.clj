@@ -85,11 +85,11 @@
   ;; require that the test environment does not set these vars. The CI
   ;; runner is responsible. Assert preconditions so a misconfigured run
   ;; fails loudly rather than silently picking up a global secret.
-  (when (System/getenv "CAUTH_IP_HMAC_KEY")
-    (throw (ex-info "test precondition: CAUTH_IP_HMAC_KEY must be unset"
+  (when (System/getenv "CONTINUITY_AUTH_IP_HMAC_KEY")
+    (throw (ex-info "test precondition: CONTINUITY_AUTH_IP_HMAC_KEY must be unset"
                     {})))
-  (when (System/getenv "CAUTH_IP_HMAC_KEY_PATH")
-    (throw (ex-info "test precondition: CAUTH_IP_HMAC_KEY_PATH must be unset"
+  (when (System/getenv "CONTINUITY_AUTH_IP_HMAC_KEY_PATH")
+    (throw (ex-info "test precondition: CONTINUITY_AUTH_IP_HMAC_KEY_PATH must be unset"
                     {})))
   (f))
 

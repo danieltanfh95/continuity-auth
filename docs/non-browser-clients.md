@@ -93,13 +93,13 @@ reference; the CLI is the ergonomic surface.
 
 ```bash
 # Bootstrap an identity using the shell example.
-CAUTH_ENDPOINT=http://localhost:8080 ./scripts/cauth-curl-example.sh
+CONTINUITY_AUTH_ENDPOINT=http://localhost:8080 ./scripts/cauth-curl-example.sh
 
 # Optional: burn the per-tier budget to demonstrate identity binding.
-CAUTH_DEMO_LOOP=200 ./scripts/cauth-curl-example.sh
+CONTINUITY_AUTH_DEMO_LOOP=200 ./scripts/cauth-curl-example.sh
 ```
 
-The script generates an Ed25519 keypair under `$CAUTH_WORKDIR`
+The script generates an Ed25519 keypair under `$CONTINUITY_AUTH_WORKDIR`
 (default a fresh `mktemp -d`), constructs the FPL2 canonical bytes
 field-by-field, signs with `openssl pkeyutl -sign -rawin`, base64url-
 encodes the byte fields, POSTs `/v1/bootstrap`, then `/v1/verify`, and
@@ -136,14 +136,14 @@ produces are guaranteed to match what the server reconstructs.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CAUTH_ENDPOINT` | `http://localhost:8080` | continuity-auth server base URL |
-| `CAUTH_HOME` | `$XDG_CONFIG_HOME/continuity-auth` (`~/.config/continuity-auth`) | Key + identity state dir |
-| `CAUTH_HOST_ID` | empty | `host_user_id` envelope field |
-| `CAUTH_ADMIN_KEY_ID` | — | (admin) HMAC key identifier |
-| `CAUTH_ADMIN_SECRET_FILE` | — | (admin) Path to HMAC secret |
+| `CONTINUITY_AUTH_ENDPOINT` | `http://localhost:8080` | continuity-auth server base URL |
+| `CONTINUITY_AUTH_HOME` | `$XDG_CONFIG_HOME/continuity-auth` (`~/.config/continuity-auth`) | Key + identity state dir |
+| `CONTINUITY_AUTH_HOST_ID` | empty | `host_user_id` envelope field |
+| `CONTINUITY_AUTH_ADMIN_KEY_ID` | — | (admin) HMAC key identifier |
+| `CONTINUITY_AUTH_ADMIN_SECRET_FILE` | — | (admin) Path to HMAC secret |
 
 Same variables work for the shell example and the CLI. They mirror the
-server's `CAUTH_*` config namespace.
+server's `CONTINUITY_AUTH_*` config namespace.
 
 ## Threat model — keys on disk
 
@@ -151,7 +151,7 @@ For browser clients, the keypair lives in IndexedDB as a non-extractable
 Web Crypto handle; even XSS can use the key but cannot exfiltrate it.
 
 For shell + CLI clients, the key lives on the filesystem at
-`$CAUTH_HOME/key.pem`. That is meaningfully different:
+`$CONTINUITY_AUTH_HOME/key.pem`. That is meaningfully different:
 
 - **Threat: host compromise leaks the key.** Anyone with read access to
   `key.pem` can sign any envelope. continuity-auth's score model
@@ -163,9 +163,9 @@ For shell + CLI clients, the key lives on the filesystem at
   to hours before its anomalies trigger tier demotion.
 
 - **Operator guidance:**
-  - On personal machines, keep `$CAUTH_HOME` mode `0700`.
+  - On personal machines, keep `$CONTINUITY_AUTH_HOME` mode `0700`.
   - On servers, store the key in a secrets manager and project it into
-    a tmpfs-mounted `$CAUTH_HOME` at process start. Don't commit it.
+    a tmpfs-mounted `$CONTINUITY_AUTH_HOME` at process start. Don't commit it.
   - Rotate via `continuity auth init --rotate` (planned for v1.1; for
     v0.1 the path is: revoke via `continuity admin revoke-key`, then
     re-init).

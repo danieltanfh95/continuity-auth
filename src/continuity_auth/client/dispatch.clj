@@ -48,12 +48,12 @@
    "  config                                 dump effective server config\n"
    "\n"
    "Env vars (auth):\n"
-   "  CAUTH_ENDPOINT  default http://localhost:8080\n"
-   "  CAUTH_HOME      default $XDG_CONFIG_HOME/continuity-auth\n"
-   "  CAUTH_HOST_ID   optional host_user_id field\n"
+   "  CONTINUITY_AUTH_ENDPOINT  default http://localhost:8080\n"
+   "  CONTINUITY_AUTH_HOME      default $XDG_CONFIG_HOME/continuity-auth\n"
+   "  CONTINUITY_AUTH_HOST_ID   optional host_user_id field\n"
    "\n"
    "Env vars (admin):\n"
-   "  CAUTH_ENDPOINT, CAUTH_ADMIN_KEY_ID, CAUTH_ADMIN_SECRET_FILE\n"
+   "  CONTINUITY_AUTH_ENDPOINT, CONTINUITY_AUTH_ADMIN_KEY_ID, CONTINUITY_AUTH_ADMIN_SECRET_FILE\n"
    "  (or pass --server / --key-id / --secret-file)\n"))
 
 (defn- subcommand-kw [s]

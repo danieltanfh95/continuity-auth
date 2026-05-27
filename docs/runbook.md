@@ -6,7 +6,7 @@ Operational guidance for on-call. For deployment, see `deployment.md`. For threa
 
 - **Healthcheck**: `curl https://fl.example.com/healthz` → 200
 - **Readiness**: `curl https://fl.example.com/readyz` → 200 with `{ready: true, db_status: "ok"}`
-- **Metrics**: `curl -H "Authorization: Bearer $CAUTH_PROM_BEARER" https://fl.example.com/metrics`
+- **Metrics**: `curl -H "Authorization: Bearer $CONTINUITY_AUTH_PROM_BEARER" https://fl.example.com/metrics`
 - **Logs**: `kubectl logs -l app=continuity-auth --tail=200` (or your stack equivalent)
 
 ## Common alerts
@@ -77,14 +77,14 @@ abuse or operator-confirmed compromise.
 
 | Knob | Default | Env override | Effect |
 |---|---|---|---|
-| `:floor-ms`              | 1000 (1s)     | `CAUTH_BOOT_FLOOR_MS`     | first allow's penalty |
-| `:cap-ms`                | 60000 (60s)   | `CAUTH_BOOT_CAP_MS`       | absolute upper bound on any penalty |
-| `:doubling-factor`       | 2             | `CAUTH_BOOT_FACTOR`       | strike multiplier per consecutive allow |
-| `:reset-threshold-ms`    | 300000 (5m)   | `CAUTH_BOOT_RESET_MS`     | quiet-time before strike count resets |
-| `:signals-enabled?`      | true          | `CAUTH_BOOT_SIGNALS`      | gate the indexed AVET read |
-| `:signal-read-timeout-ms`| 50            | `CAUTH_BOOT_SIG_TIMEOUT`  | hard deadline on the read |
-| `:signal-cache-ttl-ms`   | 300000 (5m)   | `CAUTH_BOOT_SIG_TTL`      | per-IP cache freshness window |
-| `:datacenter-cidrs`      | `""` (empty)  | `CAUTH_BOOT_DC_CIDRS`     | comma-separated CIDR list, ×5 multiplier |
+| `:floor-ms`              | 1000 (1s)     | `CONTINUITY_AUTH_BOOT_FLOOR_MS`     | first allow's penalty |
+| `:cap-ms`                | 60000 (60s)   | `CONTINUITY_AUTH_BOOT_CAP_MS`       | absolute upper bound on any penalty |
+| `:doubling-factor`       | 2             | `CONTINUITY_AUTH_BOOT_FACTOR`       | strike multiplier per consecutive allow |
+| `:reset-threshold-ms`    | 300000 (5m)   | `CONTINUITY_AUTH_BOOT_RESET_MS`     | quiet-time before strike count resets |
+| `:signals-enabled?`      | true          | `CONTINUITY_AUTH_BOOT_SIGNALS`      | gate the indexed AVET read |
+| `:signal-read-timeout-ms`| 50            | `CONTINUITY_AUTH_BOOT_SIG_TIMEOUT`  | hard deadline on the read |
+| `:signal-cache-ttl-ms`   | 300000 (5m)   | `CONTINUITY_AUTH_BOOT_SIG_TTL`      | per-IP cache freshness window |
+| `:datacenter-cidrs`      | `""` (empty)  | `CONTINUITY_AUTH_BOOT_DC_CIDRS`     | comma-separated CIDR list, ×5 multiplier |
 
 ### Datacenter / cloud-provider CIDR refresh
 
@@ -107,9 +107,9 @@ plain-text ranges):
 - **Microsoft Azure**: published weekly to `https://www.microsoft.com/...`
   (download URL changes, check the Azure docs at refresh time).
 
-Set `CAUTH_BOOT_DC_CIDRS` to the concatenated comma-separated list:
+Set `CONTINUITY_AUTH_BOOT_DC_CIDRS` to the concatenated comma-separated list:
 
-    CAUTH_BOOT_DC_CIDRS="3.0.0.0/8,5.9.0.0/16,46.4.0.0/16,..."
+    CONTINUITY_AUTH_BOOT_DC_CIDRS="3.0.0.0/8,5.9.0.0/16,46.4.0.0/16,..."
 
 The list is parsed at startup into a sorted vector of [low, high]
 inclusive-Long IPv4 ranges. The per-bootstrap membership check is O(log N).
@@ -143,7 +143,7 @@ If an active attack escapes the defaults:
 
 If `/v1/bootstrap` is only reachable from an authenticated reverse proxy
 or a private network where every IP is trusted, set
-`CAUTH_BOOT_FLOOR_MS=0` and `CAUTH_BOOT_CAP_MS=0`. The limiter then runs
+`CONTINUITY_AUTH_BOOT_FLOOR_MS=0` and `CONTINUITY_AUTH_BOOT_CAP_MS=0`. The limiter then runs
 as a no-op and the staircase collapses to no penalty. Use only when
 an upstream gate already bounds bootstrap rate.
 
@@ -163,13 +163,13 @@ an upstream gate already bounds bootstrap rate.
 **Preferred path: admin CLI** (no DB downtime, audited via `:admin-revoke` trust event).
 
 ```bash
-CAUTH_ENDPOINT=https://fl.example.com \
-CAUTH_ADMIN_KEY_ID=ops-01 \
-CAUTH_ADMIN_SECRET_FILE=/etc/cauth/admin-ops-01.secret \
+CONTINUITY_AUTH_ENDPOINT=https://fl.example.com \
+CONTINUITY_AUTH_ADMIN_KEY_ID=ops-01 \
+CONTINUITY_AUTH_ADMIN_SECRET_FILE=/etc/cauth/admin-ops-01.secret \
 continuity admin revoke-key <b64url-thumbprint>
 ```
 
-The CLI signs with HMAC-SHA256. The server validates against the keystore at `CAUTH_ADMIN_HMAC_KEYS_PATH` (a `{:keys [{:id, :secret-b64}]}` EDN file loaded at startup). On success the pubkey's `:pubkey/revoked-at` is set to `now` and subsequent `/verify` returns `E_FORBIDDEN`.
+The CLI signs with HMAC-SHA256. The server validates against the keystore at `CONTINUITY_AUTH_ADMIN_HMAC_KEYS_PATH` (a `{:keys [{:id, :secret-b64}]}` EDN file loaded at startup). On success the pubkey's `:pubkey/revoked-at` is set to `now` and subsequent `/verify` returns `E_FORBIDDEN`.
 
 **Fallback path: direct DB** (when the server is down or the keystore is lost).
 
@@ -185,9 +185,9 @@ clojure -M:dev
 ### Inspecting effective configuration
 
 ```bash
-CAUTH_ENDPOINT=https://fl.example.com \
-CAUTH_ADMIN_KEY_ID=ops-01 \
-CAUTH_ADMIN_SECRET_FILE=/etc/cauth/admin-ops-01.secret \
+CONTINUITY_AUTH_ENDPOINT=https://fl.example.com \
+CONTINUITY_AUTH_ADMIN_KEY_ID=ops-01 \
+CONTINUITY_AUTH_ADMIN_SECRET_FILE=/etc/cauth/admin-ops-01.secret \
 continuity admin config | jq
 ```
 
@@ -275,8 +275,8 @@ The score-trajectory tells you which signals contributed.
 
 **Resolution precedence** (in `continuity-auth.server.crypto.ip-hmac/load-or-create-key!`):
 
-1. Env `CAUTH_IP_HMAC_KEY` (base64url, 32 raw bytes). Used directly when set. Never written to disk. The path orchestrators (Kubernetes Secret, Vault, AWS Secrets Manager) integrate with.
-2. Env `CAUTH_IP_HMAC_KEY_PATH` overrides the configured `:key-path` in `resources/config.edn`.
+1. Env `CONTINUITY_AUTH_IP_HMAC_KEY` (base64url, 32 raw bytes). Used directly when set. Never written to disk. The path orchestrators (Kubernetes Secret, Vault, AWS Secrets Manager) integrate with.
+2. Env `CONTINUITY_AUTH_IP_HMAC_KEY_PATH` overrides the configured `:key-path` in `resources/config.edn`.
 3. Configured `:key-path` (default `/var/lib/continuity-auth/ip-hmac.key`).
 4. Auto-generation. With no file at the resolved path on startup, 32 `SecureRandom` bytes are written there with POSIX `rw-------`. The next startup reads it back.
 

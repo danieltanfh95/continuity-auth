@@ -2,7 +2,7 @@
   "continuity-auth service entrypoint.
 
   Boots the integrant system from config.edn at the :prod profile (or
-  whichever profile is set via CAUTH_PROFILE). Registers a JVM shutdown
+  whichever profile is set via CONTINUITY_AUTH_PROFILE). Registers a JVM shutdown
   hook for graceful stop on SIGTERM.
 
   CLI flags:
@@ -31,7 +31,7 @@
       (do (println summary) (System/exit 0))
 
       :else
-      (let [profile (or (some-> (System/getenv "CAUTH_PROFILE") keyword)
+      (let [profile (or (some-> (System/getenv "CONTINUITY_AUTH_PROFILE") keyword)
                         (:profile options))
             config  (config/load-config profile)
             system  (atom nil)

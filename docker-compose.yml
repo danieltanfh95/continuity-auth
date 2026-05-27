@@ -25,13 +25,13 @@ services:
     ports:
       - "8080:8080"
     environment:
-      CAUTH_HTTP_HOST: 0.0.0.0
-      CAUTH_HTTP_PORT: 8080
-      # Dev-default credential. Override CAUTH_DTLV_PASSWORD in .env (or your
+      CONTINUITY_AUTH_HTTP_HOST: 0.0.0.0
+      CONTINUITY_AUTH_HTTP_PORT: 8080
+      # Dev-default credential. Override CONTINUITY_AUTH_DTLV_PASSWORD in .env (or your
       # secrets manager) before deploying anywhere a stranger can reach.
-      CAUTH_DTLV_URI: dtlv://admin:${CAUTH_DTLV_PASSWORD:-change-me}@datalevin:8898/continuity-auth
-      CAUTH_LOG_LEVEL: info
-      CAUTH_OTEL_ENDPOINT: ""
+      CONTINUITY_AUTH_DTLV_URI: dtlv://admin:${CONTINUITY_AUTH_DTLV_PASSWORD:-change-me}@datalevin:8898/continuity-auth
+      CONTINUITY_AUTH_LOG_LEVEL: info
+      CONTINUITY_AUTH_OTEL_ENDPOINT: ""
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 10s

@@ -88,7 +88,7 @@ Each signal is preceded by its UTF-8 name and a `:` separator, then `\n`-termina
 
 ### CLI substrate (current, unprincipled)
 
-The current `bin/continuity auth init` (see `src/continuity_auth/client/cli.clj` `cmd-init`) emits 32 random bytes at bootstrap and persists them to `$CAUTH_HOME/identity.edn`. This is **functionally correct** (the digest stays stable across subsequent verifies, so the tuple-recurrence path works) but **structurally unprincipled** (the digest carries no machine-identifying information, so an operator who copies `$CAUTH_HOME` across two machines presents the same fp-digest from both — losing the ip-mismatch signal). A v1.1 follow-on derives the CLI bundle from machine-stable signals (hostname, OS, arch, machine-id where available); the wire format does not change.
+The current `bin/continuity auth init` (see `src/continuity_auth/client/cli.clj` `cmd-init`) emits 32 random bytes at bootstrap and persists them to `$CONTINUITY_AUTH_HOME/identity.edn`. This is **functionally correct** (the digest stays stable across subsequent verifies, so the tuple-recurrence path works) but **structurally unprincipled** (the digest carries no machine-identifying information, so an operator who copies `$CONTINUITY_AUTH_HOME` across two machines presents the same fp-digest from both — losing the ip-mismatch signal). A v1.1 follow-on derives the CLI bundle from machine-stable signals (hostname, OS, arch, machine-id where available); the wire format does not change.
 
 ### Other substrates
 

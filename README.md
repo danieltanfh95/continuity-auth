@@ -53,28 +53,14 @@ The trust signal is **cryptographic** (signing key) rather than **observed** (IP
 
 The full threat-model lives in **[`docs/threat-model.md`](docs/threat-model.md)**. It enumerates what's defended (T1–T19), what's explicitly out of scope, and where the boundaries are.
 
-## Hub: where to read next
-
-continuity-auth is one service. The documentation is a hub-and-spoke. The README is the pitch. The spokes carry the substance:
-
-| Doc | When to read |
-|---|---|
-| [`docs/ontology.md`](docs/ontology.md) | The data model. Identity, tuple, pubkey, host-link, score, tier. Read first if you want to reason about the system. |
-| [`docs/threat-model.md`](docs/threat-model.md) | What we defend against (T1–T19), what we don't. PII minimisation. Operating boundaries. |
-| [`docs/architecture.md`](docs/architecture.md) | Module structure, decisions, trade-offs, per-request data flow. Why each piece is where it is. |
-| [`docs/crypto-protocol.md`](docs/crypto-protocol.md) | Envelope format, canonical bytes, signature algorithms. |
-| [`docs/api.md`](docs/api.md) | Wire format for every endpoint. |
-| [`docs/integration-guide.md`](docs/integration-guide.md) | How to wire continuity-auth into a host application. |
-| [`docs/non-browser-clients.md`](docs/non-browser-clients.md) | CLI / daemon / mobile substrates. The `continuity` CLI. Keys-on-disk threat model. |
-| [`docs/deployment.md`](docs/deployment.md) | Environment variables, secrets, Datalevin server mode, Prometheus scrape, OTel. |
-| [`docs/runbook.md`](docs/runbook.md) | On-call. IP-HMAC keystore. Manual interventions. Common alerts. |
+Full doc index: [`docs/`](docs/README.md).
 
 ## Quick start
 
 ```bash
 git clone https://github.com/The-Continuity-Project/continuity-auth.git
 cd continuity-auth
-cp .env.example .env                # then edit CAUTH_DTLV_PASSWORD
+cp .env.example .env                # then edit CONTINUITY_AUTH_DTLV_PASSWORD
 docker compose up -d
 
 curl -s http://localhost:8080/healthz

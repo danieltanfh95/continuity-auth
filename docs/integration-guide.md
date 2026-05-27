@@ -24,7 +24,7 @@ continuity-auth is **substrate-neutral**: any client that holds a private key an
 
 The integration flow:
 
-1. The client (any substrate) holds a private key — generated once at first contact and persisted in a substrate-natural store (browser: non-extractable IndexedDB handle; CLI: filesystem PEM at `$CAUTH_HOME/key.pem`).
+1. The client (any substrate) holds a private key — generated once at first contact and persisted in a substrate-natural store (browser: non-extractable IndexedDB handle; CLI: filesystem PEM at `$CONTINUITY_AUTH_HOME/key.pem`).
 2. For every outgoing request the host wants to rate-limit, the client signs an envelope over the canonical bytes (see [`docs/crypto-protocol.md`](crypto-protocol.md)).
 3. The host's backend forwards the `envelope` to `POST /v1/verify` (server-to-server, over HTTPS).
 4. continuity-auth returns a decision (`ok`, `tier`, `retry_after_ms`); the host backend enforces it.
@@ -75,12 +75,12 @@ continuity auth curl -X POST \
 
 ```bash
 # Bytes-for-bytes reference: a POSIX shell script using only openssl + curl + jq.
-CAUTH_ENDPOINT=https://fl.example.com ./scripts/cauth-curl-example.sh
+CONTINUITY_AUTH_ENDPOINT=https://fl.example.com ./scripts/cauth-curl-example.sh
 ```
 
-The CLI substrate stores the keypair as `$CAUTH_HOME/key.pem` (PEM/PKCS8, openssl-compatible) and the identity record as `$CAUTH_HOME/identity.edn`. The wire bytes are identical to the browser path — see [`docs/crypto-protocol.md`](crypto-protocol.md) and [`docs/non-browser-clients.md`](non-browser-clients.md).
+The CLI substrate stores the keypair as `$CONTINUITY_AUTH_HOME/key.pem` (PEM/PKCS8, openssl-compatible) and the identity record as `$CONTINUITY_AUTH_HOME/identity.edn`. The wire bytes are identical to the browser path — see [`docs/crypto-protocol.md`](crypto-protocol.md) and [`docs/non-browser-clients.md`](non-browser-clients.md).
 
-Operator guidance for filesystem-resident keys: `chmod 700 $CAUTH_HOME`; treat the key like any long-lived API credential; rotate via `continuity admin revoke-key` + `continuity auth init` if compromise is suspected. The threat-model coverage is in [`docs/threat-model.md`](threat-model.md) T1 (CLI substrate row).
+Operator guidance for filesystem-resident keys: `chmod 700 $CONTINUITY_AUTH_HOME`; treat the key like any long-lived API credential; rotate via `continuity admin revoke-key` + `continuity auth init` if compromise is suspected. The threat-model coverage is in [`docs/threat-model.md`](threat-model.md) T1 (CLI substrate row).
 
 ## What about non-engaging callers?
 

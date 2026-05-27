@@ -103,7 +103,7 @@
   compare). If `bearer` is nil or blank, /metrics always returns 401 —
   refusing to ship an open metrics endpoint by default.
   Operators who genuinely want /metrics open in a sandboxed network
-  should set `CAUTH_PROM_BEARER` and gate it at the upstream proxy."
+  should set `CONTINUITY_AUTH_PROM_BEARER` and gate it at the upstream proxy."
   [{:keys [registry bearer]}]
   (fn [request]
     (cond

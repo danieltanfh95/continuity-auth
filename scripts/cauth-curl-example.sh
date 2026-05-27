@@ -15,23 +15,23 @@
 #   GNU coreutils OR BSD equivalents (base64, head, tr, od)
 #
 # Env vars:
-#   CAUTH_ENDPOINT   default http://localhost:8080
-#   CAUTH_HOST_ID    default "" (the host_user_id envelope field)
-#   CAUTH_WORKDIR    default $(mktemp -d) (key/state lives here)
-#   CAUTH_DEMO_LOOP  default 0 (set non-zero to run the rate-limit burn demo)
+#   CONTINUITY_AUTH_ENDPOINT   default http://localhost:8080
+#   CONTINUITY_AUTH_HOST_ID    default "" (the host_user_id envelope field)
+#   CONTINUITY_AUTH_WORKDIR    default $(mktemp -d) (key/state lives here)
+#   CONTINUITY_AUTH_DEMO_LOOP  default 0 (set non-zero to run the rate-limit burn demo)
 #
 # Exit codes:
 #   0   bootstrap + verify both 2xx
 #   1   bootstrap failed
 #   2   verify failed
-#   3   rate-limit demo failed (when CAUTH_DEMO_LOOP set)
+#   3   rate-limit demo failed (when CONTINUITY_AUTH_DEMO_LOOP set)
 
 set -euo pipefail
 
-ENDPOINT="${CAUTH_ENDPOINT:-http://localhost:8080}"
-HOST_ID="${CAUTH_HOST_ID:-}"
-WORKDIR="${CAUTH_WORKDIR:-$(mktemp -d -t cauth-curl-XXXXXX)}"
-DEMO_LOOP="${CAUTH_DEMO_LOOP:-0}"
+ENDPOINT="${CONTINUITY_AUTH_ENDPOINT:-http://localhost:8080}"
+HOST_ID="${CONTINUITY_AUTH_HOST_ID:-}"
+WORKDIR="${CONTINUITY_AUTH_WORKDIR:-$(mktemp -d -t cauth-curl-XXXXXX)}"
+DEMO_LOOP="${CONTINUITY_AUTH_DEMO_LOOP:-0}"
 
 KEY_PEM="${WORKDIR}/key.pem"
 PUB_DER="${WORKDIR}/pubkey.der"
@@ -219,7 +219,7 @@ fi
 
 if [[ "$DEMO_LOOP" != "0" ]]; then
   log ""
-  log "[demo] burning the anonymous-tier budget (CAUTH_DEMO_LOOP=${DEMO_LOOP})"
+  log "[demo] burning the anonymous-tier budget (CONTINUITY_AUTH_DEMO_LOOP=${DEMO_LOOP})"
   i=0
   while (( i < DEMO_LOOP )); do
     i=$((i+1))

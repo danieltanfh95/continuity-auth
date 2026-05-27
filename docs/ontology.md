@@ -16,7 +16,7 @@ The conceptual model. Everything else (schema, merge algorithm, sliding window, 
 | `Bucket` | Accounting unit for the sliding-window-counter algorithm. | `(identity, window-size, start)` | No — bound to one identity |
 | `EraseStub` | Audit trace of a GDPR erasure. Hashed identity-id only; no user data. | EID + `:erase-stub/identity-hash` | Self (long-lived) |
 
-A *Person* is not an entity in this system. We track clusters; clusters are evidence-based proxies for persons. Two clusters can refer to one person (post-erasure regeneration, multiple devices without host-link); one cluster can in principle refer to multiple people (shared device with a shared keypair — browser profile shared across users, CLI `$CAUTH_HOME` shared across operators). The system does not claim to identify persons.
+A *Person* is not an entity in this system. We track clusters; clusters are evidence-based proxies for persons. Two clusters can refer to one person (post-erasure regeneration, multiple devices without host-link); one cluster can in principle refer to multiple people (shared device with a shared keypair — browser profile shared across users, CLI `$CONTINUITY_AUTH_HOME` shared across operators). The system does not claim to identify persons.
 
 ## 2. The four axes (and why they are not equivalent)
 

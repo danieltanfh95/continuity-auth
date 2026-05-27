@@ -9,9 +9,9 @@
 
   Keystore handling (precedence at startup):
 
-    1. Env `CAUTH_IP_HMAC_KEY` (base64, 32 bytes): use directly. Never
+    1. Env `CONTINUITY_AUTH_IP_HMAC_KEY` (base64, 32 bytes): use directly. Never
        written to disk.
-    2. Else path from `CAUTH_IP_HMAC_KEY_PATH` (or the configured
+    2. Else path from `CONTINUITY_AUTH_IP_HMAC_KEY_PATH` (or the configured
        `:key-path`). Read EDN `{:secret-b64 \"...\"}`.
     3. If neither resolves to an existing file, generate 32
        `SecureRandom` bytes, write the EDN file at the resolved path
@@ -83,9 +83,9 @@
 
 (defn resolve-key-path
   "Return the configured/default keyfile path. Env
-  `CAUTH_IP_HMAC_KEY_PATH` overrides the config value."
+  `CONTINUITY_AUTH_IP_HMAC_KEY_PATH` overrides the config value."
   ^String [{:keys [key-path]}]
-  (let [from-env (env "CAUTH_IP_HMAC_KEY_PATH")]
+  (let [from-env (env "CONTINUITY_AUTH_IP_HMAC_KEY_PATH")]
     (cond
       (not (blank? from-env))  from-env
       (not (blank? key-path))  key-path
@@ -98,12 +98,12 @@
     {:key-path <string>  ; default-path fallback
      :key-b64  <string>} ; direct env-supplied secret (takes precedence)"
   ^bytes [{:keys [key-b64] :as config}]
-  (let [from-env-key (env "CAUTH_IP_HMAC_KEY")]
+  (let [from-env-key (env "CONTINUITY_AUTH_IP_HMAC_KEY")]
     (cond
       (not (blank? from-env-key))
       (let [bs (envelope/b64url-decode from-env-key)]
         (when-not (= key-bytes (alength bs))
-          (throw (ex-info "CAUTH_IP_HMAC_KEY: wrong length"
+          (throw (ex-info "CONTINUITY_AUTH_IP_HMAC_KEY: wrong length"
                           {:expected key-bytes :got (alength bs)})))
         bs)
 

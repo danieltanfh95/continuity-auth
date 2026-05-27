@@ -8,16 +8,16 @@
       continuity auth wget  ARGS…          ; wraps wget, attaches signed envelope
       continuity auth show                 ; print identity_ref + key thumbprint
 
-  State lives under `$CAUTH_HOME` (default `${XDG_CONFIG_HOME:-~/.config}/
+  State lives under `$CONTINUITY_AUTH_HOME` (default `${XDG_CONFIG_HOME:-~/.config}/
   continuity-auth`):
 
-      $CAUTH_HOME/key.pem        ; Ed25519 PEM/PKCS8, openssl-compatible
-      $CAUTH_HOME/identity.edn   ; identity_ref + pubkey + key_id + fp digest
+      $CONTINUITY_AUTH_HOME/key.pem        ; Ed25519 PEM/PKCS8, openssl-compatible
+      $CONTINUITY_AUTH_HOME/identity.edn   ; identity_ref + pubkey + key_id + fp digest
 
   Env vars:
-      CAUTH_ENDPOINT  default http://localhost:8080
-      CAUTH_HOME      default $XDG_CONFIG_HOME/continuity-auth
-      CAUTH_HOST_ID   optional host_user_id field on each envelope
+      CONTINUITY_AUTH_ENDPOINT  default http://localhost:8080
+      CONTINUITY_AUTH_HOME      default $XDG_CONFIG_HOME/continuity-auth
+      CONTINUITY_AUTH_HOST_ID   optional host_user_id field on each envelope
 
   Shells out to openssl for Ed25519 keygen + sign so the on-disk key file
   is byte-identical to the one the `scripts/cauth-curl-example.sh` shell
@@ -48,13 +48,13 @@
       (str (System/getProperty "user.home") "/.config")))
 
 (defn- cauth-home []
-  (getenv-or "CAUTH_HOME" (str (xdg-config-dir) "/continuity-auth")))
+  (getenv-or "CONTINUITY_AUTH_HOME" (str (xdg-config-dir) "/continuity-auth")))
 
 (defn- cauth-endpoint []
-  (getenv-or "CAUTH_ENDPOINT" "http://localhost:8080"))
+  (getenv-or "CONTINUITY_AUTH_ENDPOINT" "http://localhost:8080"))
 
 (defn- cauth-host-id []
-  (getenv-or "CAUTH_HOST_ID" ""))
+  (getenv-or "CONTINUITY_AUTH_HOST_ID" ""))
 
 (defn- key-path  [] (str (cauth-home) "/key.pem"))
 (defn- id-path   [] (str (cauth-home) "/identity.edn"))
