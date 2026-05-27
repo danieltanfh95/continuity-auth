@@ -250,7 +250,20 @@
             r (http-post port "/v1/verify" {:envelope v-env})]
         (is (= 200 (:status r)) (str "body: " (:body r)))
         (is (true? (-> r :body :ok)))
-        (is (-> r :body :identity_ref))))))
+        (is (-> r :body :identity_ref))
+        (is (number? (-> r :body :priority_weight))
+            "verify allow response must include :priority_weight (numeric)")
+        ;; The priority_weight must match the default mapping for whatever
+        ;; tier the response reports. After bootstrap + one verify with
+        ;; pubkey-match the score lands inside :tracked under defaults,
+        ;; but the assertion is tier-driven so it survives score tuning.
+        (let [tier-kw (keyword (-> r :body :tier))
+              expected (get {:anonymous 1.0 :tracked 30.0
+                             :penalized 0.0 :banned 0.0}
+                            tier-kw)]
+          (is (= expected (-> r :body :priority_weight))
+              (str "priority_weight should match default weight for tier "
+                   (-> r :body :tier))))))))
 
 (deftest verify-replay-rejected
   (with-running-system

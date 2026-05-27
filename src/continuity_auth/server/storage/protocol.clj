@@ -64,11 +64,6 @@
     [this snapshot pubkey-eid]
     "Indexed lookup: all tuples whose :tuple/pubkey = pubkey-eid.")
 
-  (find-buckets
-    [this snapshot identity-eid window]
-    "Return the at-most-2 active buckets for (identity, window) ordered
-    by :bucket/start descending.")
-
   (find-host-link-by-host-user-id
     [this snapshot host-id host-user-id]
     "Return the host-link entity for (host-id, host-user-id), or nil.")

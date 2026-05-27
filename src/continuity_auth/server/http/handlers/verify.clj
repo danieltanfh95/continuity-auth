@@ -3,9 +3,16 @@
 
   Request body: {\"envelope\": <wire-envelope>}
   Response (allow): {\"ok\": true, \"identity_ref\": <uuid>,
-                     \"tier\": <string>, \"retry_after_ms\": 0}
+                     \"tier\": <string>, \"retry_after_ms\": 0,
+                     \"priority_weight\": <double>}
   Response (deny):  {\"ok\": false, \"retry_after_ms\": <ms>,
-                     \"code\": \"E_RATE\" | \"E_FORBIDDEN\"}"
+                     \"code\": \"E_RATE\" | \"E_FORBIDDEN\",
+                     \"priority_weight\": <double>  ; on E_RATE only}
+
+  The `priority_weight` field is a host-side scheduling input —
+  relative weight for weighted fair queuing or priority admission.
+  continuity-auth itself does not enforce priority; hosts may consult
+  it to order their own queues."
   (:require
    [continuity-auth.envelope :as envelope]
    [continuity-auth.server.http.envelope-check :as ec]
@@ -92,7 +99,8 @@
                              :ever-tracked? (boolean (:identity/ever-tracked? identity))}
                             tier-thresholds)
               limits       (tier/limits-for tier-now tier-limits)
-              window-decs  (window/check-many store identity-eid windows limits now)]
+              window-decs  (window/check-many store identity-eid windows limits now)
+              pw           (tier/priority-weight tier-now)]
           (if (:allowed? window-decs)
             (let [tx (merge/classification-tx
                       classification incoming score-before scoring now)]
@@ -106,13 +114,14 @@
                                        (- (System/currentTimeMillis) start-ms))
               {:status  200
                :headers {"Content-Type" "application/json; charset=utf-8"}
-               :body    {:ok             true
-                         :identity_ref   (-> (storage/pull store snap
+               :body    {:ok              true
+                         :identity_ref    (-> (storage/pull store snap
                                                             identity-eid
                                                             [:identity/id])
                                               :identity/id str)
-                         :tier           (name tier-now)
-                         :retry_after_ms 0}})
+                         :tier            (name tier-now)
+                         :retry_after_ms  0
+                         :priority_weight pw}})
             (do
               ;; Throttle event log doesn't update score, so async is fine
               ;; here — no read-modify-write race to lose.
@@ -123,4 +132,6 @@
                  :request/outcome  :throttled}])
               (metrics/record-verify! registry :throttled tier-now
                                        (- (System/currentTimeMillis) start-ms))
-              (errors/error-response :E_RATE (:retry-after-ms window-decs)))))))))
+              (errors/error-response :E_RATE
+                                     (:retry-after-ms window-decs)
+                                     {:priority_weight pw}))))))))

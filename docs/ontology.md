@@ -1,6 +1,6 @@
 # continuity-auth — ontology
 
-The conceptual model. Everything else (schema, merge algorithm, sliding window, API) is a projection of this. If something in this document is wrong, fix it here first; do not paper over it downstream.
+The conceptual model. Everything else (schema, merge algorithm, rate-limit engine, API) is a projection of this. If something in this document is wrong, fix it here first; do not paper over it downstream.
 
 ## 1. Entities (the kinds of things in the system)
 
@@ -9,11 +9,11 @@ The conceptual model. Everything else (schema, merge algorithm, sliding window, 
 | `Identity` | A logical user cluster — the system's best guess at "the same actor". Not a person. | UUID `:identity/id` | Yes |
 | `Tuple` | An observed combination `(ip, fp-digest, pubkey-ref)`. One tuple per distinct combination ever observed (not per request). | `(ip, fp-digest, pubkey)` triple. Composite key. | No — bound to one identity |
 | `Pubkey` | A registered public key (Ed25519 / P-256). | 32-byte SHA-256 thumbprint of the canonical pubkey bytes | No — bound to one identity |
-| `Request` | One observed `/verify` attempt. Audit/sliding-window data; never user-facing. | EID (or `nonce-hash` while live) | No — bound to one identity |
+| `Request` | One observed `/verify` attempt. Audit/rate-limit data; never user-facing. | EID (or `nonce-hash` while live) | No — bound to one identity |
 | `TrustEvent` | An explicit modification to an identity's trust score (audit trail). | EID | No — bound to one identity |
 | `Nonce` | A one-shot anti-replay token. | Hash of the raw nonce (we never store the raw nonce). | Self |
 | `HostLink` | Attestation by the host application: "host_user_id `X` belongs to identity `I`." | `(host-id, host-user-id)` pair | No — bound to one identity |
-| `Bucket` | Accounting unit for the sliding-window-counter algorithm. | `(identity, window-size, start)` | No — bound to one identity |
+| `Bucket` | Token-bucket accounting unit, one per `(identity, window)`. State: `:bucket/tokens` (current count, double) + `:bucket/last-refill-ms` (epoch ms). Tokens refill at `capacity / window-seconds`. | `(identity, window)` | No — bound to one identity |
 | `EraseStub` | Audit trace of a GDPR erasure. Hashed identity-id only; no user data. | EID + `:erase-stub/identity-hash` | Self (long-lived) |
 
 A *Person* is not an entity in this system. We track clusters; clusters are evidence-based proxies for persons. Two clusters can refer to one person (post-erasure regeneration, multiple devices without host-link); one cluster can in principle refer to multiple people (shared device with a shared keypair — browser profile shared across users, CLI `$CONTINUITY_AUTH_HOME` shared across operators). The system does not claim to identify persons.

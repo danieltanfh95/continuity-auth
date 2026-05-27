@@ -43,25 +43,31 @@
    :E_UNAVAILABLE       503})
 
 (defn error-response
-  "Build a Ring response map for `code` with optional `retry-after-ms`."
+  "Build a Ring response map for `code` with optional `retry-after-ms`
+  and an optional `extras` map merged into the JSON body. Use `extras`
+  for additive, non-leaky context (e.g. `:priority_weight` on
+  rate-limit denials), never for which-check-failed disclosure."
   ([code]
-   (error-response code 0))
+   (error-response code 0 nil))
   ([code retry-after-ms]
+   (error-response code retry-after-ms nil))
+  ([code retry-after-ms extras]
    {:pre [(contains? error-codes code)]}
    (let [ms (long retry-after-ms)
          ;; HTTP `Retry-After` is integer seconds and clients wait AT
          ;; LEAST that long. Use ceiling so a 1500 ms penalty reports as
          ;; "2", not "1" — under-reporting would let a polled client
          ;; retry inside the penalty window.
-         secs (quot (+ ms 999) 1000)]
+         secs (quot (+ ms 999) 1000)
+         body (merge {:ok             false
+                      :retry_after_ms ms
+                      :code           (name code)}
+                     (or extras {}))]
      {:status  (get code->status code 500)
       :headers {"Content-Type"  "application/json; charset=utf-8"
                 "Cache-Control" "no-store"
                 "Retry-After"   (str secs)}
-      :body    (json/write-value-as-string
-                {:ok             false
-                 :retry_after_ms ms
-                 :code           (name code)})})))
+      :body    (json/write-value-as-string body)})))
 
 (defn fail!
   "Throw an ex-info that will be converted to an error response by the

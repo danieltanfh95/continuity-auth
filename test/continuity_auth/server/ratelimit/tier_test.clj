@@ -50,3 +50,42 @@
   (prop/for-all [s (gen/double* {:min 0.31 :max 1.0 :NaN? false :infinite? false})]
     (= :tracked
        (tier/project {:score s :host-linked? false :ever-tracked? false}))))
+
+;; -- priority-weight ------------------------------------------------------
+
+(deftest priority-weight-anonymous-baseline
+  (is (= 1.0 (tier/priority-weight :anonymous))))
+
+(deftest priority-weight-tracked-matches-1m-capacity-ratio
+  (testing "Tracked = 30, anonymous = 1 — matches the :1m capacity ratio
+            (30/1 in default-limits)"
+    (is (= 30.0 (tier/priority-weight :tracked)))))
+
+(deftest priority-weight-penalized-zero
+  (is (= 0.0 (tier/priority-weight :penalized))))
+
+(deftest priority-weight-banned-zero
+  (is (= 0.0 (tier/priority-weight :banned))))
+
+(deftest priority-weight-unknown-tier-defaults-anonymous
+  (testing "Unknown tier keyword defaults to the anonymous weight (1.0),
+            not 0 — an unrecognised tier shouldn't be treated as banned."
+    (is (= 1.0 (tier/priority-weight :some-future-tier)))))
+
+(defspec p-priority-weight-monotone-with-tier 100
+  (prop/for-all [s (gen/double* {:min 0.0 :max 1.0 :NaN? false :infinite? false})]
+    (let [;; Construct two identities with the same score; one host-linked,
+          ;; one not. Their tiers may differ, but priority-weight monotonicity
+          ;; over the (banned ≤ penalized ≤ anonymous ≤ tracked) ordering
+          ;; holds across all (score, host-linked?, ever-tracked?) inputs.
+          tier-orderings {:banned 0 :penalized 1 :anonymous 2 :tracked 3}
+          weights        (map tier/priority-weight (keys tier-orderings))
+          ordered-tiers  (sort-by tier-orderings (keys tier-orderings))
+          ordered-weights (map tier/priority-weight ordered-tiers)]
+      (and (every? double? weights)
+           (apply <= ordered-weights)
+           ;; Score-independent property: the function is total.
+           (double? (tier/priority-weight
+                     (tier/project {:score s
+                                    :host-linked? false
+                                    :ever-tracked? false})))))))

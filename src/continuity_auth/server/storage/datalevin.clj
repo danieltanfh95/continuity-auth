@@ -114,22 +114,6 @@
   (find-tuples-by-pubkey [_ snap pubkey-eid]
     (find-tuples-by-attr (to-db snap) :tuple/pubkey pubkey-eid))
 
-  (find-buckets [_ snap identity-eid window]
-    (let [db   (to-db snap)
-          eids (d/q '[:find [?e ...]
-                      :in $ ?ident ?w
-                      :where
-                      [?e :bucket/identity ?ident]
-                      [?e :bucket/window ?w]]
-                    db identity-eid window)]
-      (->> eids
-           (mapv #(d/pull db
-                          [:db/id :bucket/identity :bucket/window
-                           :bucket/start :bucket/count] %))
-           (sort-by :bucket/start)
-           reverse
-           vec)))
-
   (find-host-link-by-host-user-id [_ snap host-id host-user-id]
     (let [db   (to-db snap)
           eids (d/q '[:find [?e ...]

@@ -245,10 +245,10 @@ Look up the most recent `:request/identity` for the relevant identity-ref:
      (d/db conn) #uuid "...")
 ```
 
-Then check the bucket state:
+Then check the bucket state. Each `(identity, window)` has at most one token-bucket entity; `:bucket/tokens` is the current count (capped at the tier's capacity) and `:bucket/last-refill-ms` is the epoch ms of the last check that consumed or observed it. `tokens-now = min(capacity, tokens + (now-ms - last-refill-ms) * leak-rate / 1000)`.
 
 ```clojure
-(d/q '[:find [(pull ?b [:bucket/window :bucket/start :bucket/count]) ...]
+(d/q '[:find [(pull ?b [:bucket/window :bucket/tokens :bucket/last-refill-ms]) ...]
        :in $ ?id
        :where
        [?i :identity/id ?id]

@@ -5,8 +5,8 @@ This guide describes how a host application integrates continuity-auth as a para
 The contract:
 
 - continuity-auth does not own sessions, cookies, or redirects.
-- continuity-auth returns advisory decisions of the form `{ok, tier, retry_after_ms, identity_ref}` per envelope.
-- The host enforces the decision.
+- continuity-auth returns advisory decisions of the form `{ok, tier, retry_after_ms, identity_ref, priority_weight}` per envelope.
+- The host enforces the decision. `priority_weight` is optional input for host-side weighted fair queuing — see [Rate-limiter stacking](#rate-limiter-stacking) below.
 
 ## Architecture
 
@@ -27,7 +27,7 @@ The integration flow:
 1. The client (any substrate) holds a private key — generated once at first contact and persisted in a substrate-natural store (browser: non-extractable IndexedDB handle; CLI: filesystem PEM at `$CONTINUITY_AUTH_HOME/key.pem`).
 2. For every outgoing request the host wants to rate-limit, the client signs an envelope over the canonical bytes (see [`docs/crypto-protocol.md`](crypto-protocol.md)).
 3. The host's backend forwards the `envelope` to `POST /v1/verify` (server-to-server, over HTTPS).
-4. continuity-auth returns a decision (`ok`, `tier`, `retry_after_ms`); the host backend enforces it.
+4. continuity-auth returns a decision (`ok`, `tier`, `retry_after_ms`, `priority_weight`); the host backend enforces it.
 
 ## Frontend integration (browser substrate)
 
@@ -137,6 +137,21 @@ If the host already has its own rate limiter (e.g. per-IP, per-route), it can:
 - Disable the host's IP-based limiter on routes covered by continuity-auth.
 
 Or keep both stacked. continuity-auth makes the tiering decision; the host's per-route limiter can still narrow further on specific high-value endpoints.
+
+## Priority queuing on the host (using `priority_weight`)
+
+continuity-auth's rate limiter is a token bucket per `(identity, window)` per tier — it returns *allow / deny + retry_after_ms*, never a held connection. If you want trusted callers to *jump the line* during burst (rather than just getting a larger bucket), implement priority admission on your side and key it off `priority_weight`. The verify response carries the weight in both the 200 (allow) and 429 (E_RATE) cases so a host-side queue can place denied retries at the right position too.
+
+Default weights mirror the `:1m` capacity ratios in `:ratelimit/:tiers`:
+
+| Tier        | `priority_weight` | Rough intent                                    |
+|-------------|-------------------|-------------------------------------------------|
+| `tracked`   | 30.0              | Trusted; jumps ahead of anonymous under load    |
+| `anonymous` | 1.0               | Baseline                                        |
+| `penalized` | 0.0               | Effectively last in line                        |
+| `banned`    | 0.0               | Same; usually a 403 path anyway                 |
+
+continuity-auth itself never holds connections — that would turn a trust service into a deployment liability. Priority queuing belongs on the host or in a sidecar.
 
 ## CORS
 

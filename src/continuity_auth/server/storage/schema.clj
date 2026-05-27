@@ -214,10 +214,19 @@
    :host-link/host-sig-verified?
    {:db/valueType :db.type/boolean}
 
-   ;; -- bucket (sliding-window-counter accounting) ------------------------
-   ;; `:bucket/key` is the slot key — `"<identity-eid>|<window-name>|<start-ms>"` —
-   ;; with `:db.unique/identity` so concurrent writes upsert into one entity
-   ;; instead of fragmenting the counter across many.
+   ;; -- bucket (token-bucket rate-limit accounting) -----------------------
+   ;; `:bucket/key` is the per-(identity, window) slot key —
+   ;; `"<identity-eid>|<window-name>"` — with `:db.unique/identity` so
+   ;; concurrent writes upsert into one entity. Each (identity, window)
+   ;; has at most one bucket entity; state evolves over time via
+   ;; `:bucket/tokens` and `:bucket/last-refill-ms`.
+   ;;
+   ;; `:bucket/start` and `:bucket/count` are legacy attributes from the
+   ;; pre-token-bucket sliding-window scheme. They remain declared in
+   ;; the schema (sparse) so old data in long-lived stores doesn't
+   ;; trigger schema errors, but the current algorithm does not read
+   ;; or write them. A future cleanup PR will drop them once production
+   ;; stores have been soaked at the new schema for some time.
    :bucket/key
    {:db/valueType :db.type/string
     :db/unique    :db.unique/identity}
@@ -230,6 +239,13 @@
    {:db/valueType :db.type/keyword
     :db/index     true}                   ; :1m | :5m | :1d | ...
 
+   :bucket/tokens
+   {:db/valueType :db.type/double}
+
+   :bucket/last-refill-ms
+   {:db/valueType :db.type/long}
+
+   ;; -- legacy bucket attrs (sliding-window scheme, no longer written) ----
    :bucket/start
    {:db/valueType :db.type/instant
     :db/index     true}

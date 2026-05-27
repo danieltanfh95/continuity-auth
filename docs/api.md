@@ -82,14 +82,28 @@ Main rate-limit decision path. The host backend calls this for every request it 
 **Response (200 — allow):**
 ```json
 {
-  "ok":             true,
-  "identity_ref":   "<uuid>",
-  "tier":           "anonymous" | "tracked" | "penalized" | "banned",
-  "retry_after_ms": 0
+  "ok":              true,
+  "identity_ref":    "<uuid>",
+  "tier":            "anonymous" | "tracked" | "penalized" | "banned",
+  "retry_after_ms":  0,
+  "priority_weight": 30.0
 }
 ```
 
-**Response (429 — throttle):** standard error shape with `code = "E_RATE"` and `retry_after_ms > 0`.
+**Response (429 — throttle):** standard error shape with `code = "E_RATE"`, `retry_after_ms > 0`, and `priority_weight` carried through so hosts can place the failed request into a tiered retry queue.
+
+**`priority_weight`** is a host-side scheduling input — a relative weight for weighted fair queuing or priority admission. continuity-auth itself does **not** enforce priority; hosts may consult the weight to order their own queues or ignore it entirely. Default values mirror the `:1m` capacity ratios in `:ratelimit/:tiers`:
+
+| Tier         | `priority_weight` |
+|--------------|-------------------|
+| `tracked`    | 30.0              |
+| `anonymous`  | 1.0               |
+| `penalized`  | 0.0               |
+| `banned`     | 0.0               |
+
+The numeric scale is advisory and non-normative — hosts that want a different ordering can map the `tier` string directly. The weight is included so the common case (weighted fair queuing keyed on tier) requires zero host-side configuration.
+
+**Rate-limit shape:** the per-tier limits in `:ratelimit/:tiers` are token-bucket capacities. Each window has its own bucket per identity with `leak_rate = capacity / window_seconds`; bursts up to `capacity` are absorbed and steady-state throughput equals `leak_rate`. `retry_after_ms` is the time until the next token leaks in, not the time until the window edge — trusted callers recover faster from short bursts than they did under the prior sliding-window engine.
 
 **Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN` (revoked key, banned tier), `E_REPLAY`, `E_RATE`.
 

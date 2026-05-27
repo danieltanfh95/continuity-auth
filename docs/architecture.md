@@ -66,13 +66,19 @@ This asymmetry is the heart of why continuity-auth resists poisoning attacks: an
 
 ### Single read snapshot per decision
 
-The `/verify` handler obtains one Datalevin snapshot at the start of the request. All downstream computation (pubkey lookup, cluster classification, tier projection, sliding-window check) reads from that snapshot. Writes are dispatched via `transact-async!` after the response is sent.
+The `/verify` handler obtains one Datalevin snapshot at the start of the request. All downstream computation (pubkey lookup, cluster classification, tier projection, token-bucket check) reads from that snapshot. Writes are dispatched via `transact-async!` after the response is sent.
 
 This is what makes the decision TOCTOU-safe (invariant I10) and keeps response latency decoupled from write throughput.
 
+### Rate-limit engine: token-bucket per tier per window
+
+Each `(identity, window)` pair has one token-bucket entity keyed by `:bucket/key = "<identity-eid>|<window>"`. Capacity is the per-tier per-window value from `:ratelimit/:tiers` in config (e.g. `:tracked {:1m 30 :5m 120 :1d 5000}`); leak rate is derived as `capacity / window-seconds`, which makes steady-state throughput identical to the prior sliding-window engine. The difference is the recovery shape under burst: `retry_after_ms` is the time until the next token leaks back into the bucket, not the time until the window edge. A trusted caller who exhausts a `:1m` budget recovers within a few hundred milliseconds rather than tens of seconds.
+
+The verify response surfaces `:priority_weight` — a numeric proxy for tier that hosts can use as a weighted-fair-queuing weight. continuity-auth itself does not hold connections or implement priority admission (that would turn the trust service into a deployment liability); priority queuing belongs in the host backend or a sidecar, and `priority_weight` is the integration seam.
+
 ### Pure-where-possible, transactional-where-necessary
 
-Score deltas, tier projection, sliding-window arithmetic, envelope canonicalization are pure functions. Storage interaction is concentrated in two phases per request: read at the top, write asynchronously after the decision. This makes most of the system trivially testable without a real DB; only the integration layer needs ephemeral Datalevin.
+Score deltas, tier projection, token-bucket arithmetic, envelope canonicalization are pure functions. Storage interaction is concentrated in two phases per request: read at the top, write asynchronously after the decision. This makes most of the system trivially testable without a real DB; only the integration layer needs ephemeral Datalevin.
 
 ### Genericity through protocols
 

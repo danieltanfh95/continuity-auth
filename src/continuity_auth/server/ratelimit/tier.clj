@@ -74,3 +74,25 @@
    (limit-for tier window default-limits))
   ([tier window all-limits]
    (long (get (limits-for tier all-limits) window 0))))
+
+(def default-priority-weights
+  "Per-tier scheduling weight surfaced in the verify response as
+  `:priority_weight`. Values mirror the `:1m` capacity ratio so a host
+  doing weighted fair queuing matches the relative service rates this
+  service grants. The numbers are advisory: continuity-auth itself does
+  not enforce priority; the host backend may consult them or ignore them."
+  {:anonymous  1.0
+   :tracked    30.0
+   :penalized  0.0
+   :banned     0.0})
+
+(defn priority-weight
+  "Return the numeric scheduling weight for `tier` under `weights` (or
+  the defaults). Tiers absent from the map default to 1.0 (the
+  anonymous-tier weight) rather than 0, on the grounds that an unknown
+  tier should not be treated as banned."
+  ^double
+  ([tier]
+   (priority-weight tier default-priority-weights))
+  ([tier weights]
+   (double (get weights tier 1.0))))
