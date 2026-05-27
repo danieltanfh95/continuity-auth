@@ -104,6 +104,21 @@ CLI install for non-browser callers: see [`docs/non-browser-clients.md`](docs/no
 
 Server: Clojure 1.12 on JDK 21, Ring/Reitit, Jetty 11, Malli, Integrant. Storage: Datalevin (LMDB, server mode in production). Crypto: BouncyCastle for Ed25519/P-256 on JVM. Web Crypto SubtleCrypto in the browser. Client: ClojureScript via shadow-cljs, `:esm` target, gzipped budget 40 KB (currently well under).
 
+## For devs
+
+Repo layout: `src/continuity_auth/server/` (Clojure server), `src/continuity_auth/client/` (ClojureScript), `test/` (unit / integration / adversarial suites).
+
+Common commands:
+
+```
+just ci                       # the one gate: lint + tests + uberjar + cljs release + bundle check
+clojure -M:run                # JVM dev server, embedded Datalevin at /tmp/continuity-auth-dev.dtlv
+clojure -M:test               # JVM tests only
+npx shadow-cljs watch core    # rebuild the client on save
+```
+
+Architecture, module structure, and per-request data flow: [`docs/architecture.md`](docs/architecture.md).
+
 ## Status
 
 Public API, wire envelope, and DB schema are stable. Releases and changelog live in the GitHub releases page. Planned items are tracked in [`docs/api.md`](docs/api.md) and [`docs/architecture.md`](docs/architecture.md).
