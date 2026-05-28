@@ -72,6 +72,8 @@
     :replay              replay
     :rate-windows        (:windows ratelimit)
     :tier-limits         (:tiers ratelimit)
+    :priority-weights    (:priority-weights ratelimit)
+    :class-caps          (:class-caps ratelimit)
     :scoring             scoring
     :proxy               trusted-proxies
     :limits              limits
@@ -158,8 +160,8 @@
 
 (defmethod ig/init-key :cauth/http-handler
   [_ {:keys [storage clock metrics replay rate-windows tier-limits
-              scoring proxy limits grace admin-keystore config
-              bootstrap-rate-limit ip-hmac-key]}]
+              priority-weights class-caps scoring proxy limits grace
+              admin-keystore config bootstrap-rate-limit ip-hmac-key]}]
   (router/make-handler
    {:store               storage
     :clock               clock
@@ -169,6 +171,8 @@
     :windows             (normalize-rate-windows rate-windows)
     :scoring             scoring
     :tier-limits         tier-limits
+    :priority-weights    priority-weights
+    :global-limits       class-caps
     :registry            (:registry metrics)
     :bearer              (:bearer metrics)
     :keystore            admin-keystore

@@ -54,12 +54,16 @@
          :windows  — a coll of {:window kw :seconds long}
          :scoring  — score deltas map
          :tier-thresholds — tier projection thresholds (or nil for default)
-         :tier-limits     — per-tier limits map (or nil for default)}"
+         :tier-limits     — per-tier per-window limit cells (or nil for default)
+         :global-limits   — per-tier class caps {tier {window cell}} (or nil = off)
+         :priority-weights — per-tier scheduling weights (or nil for default)}"
   [{:keys [store clock tolerance-seconds nonce-ttl-seconds registry
-            windows scoring tier-thresholds tier-limits]
-    :or {scoring         score/default-deltas
-         tier-thresholds tier/default-thresholds
-         tier-limits     tier/default-limits}}]
+            windows scoring tier-thresholds tier-limits global-limits
+            priority-weights]
+    :or {scoring          score/default-deltas
+         tier-thresholds  tier/default-thresholds
+         tier-limits      tier/default-limits
+         priority-weights tier/default-priority-weights}}]
   (fn [request]
     (let [start-ms (System/currentTimeMillis)
           env (parse-envelope (:body-params request))
@@ -99,8 +103,14 @@
                              :ever-tracked? (boolean (:identity/ever-tracked? identity))}
                             tier-thresholds)
               limits       (tier/limits-for tier-now tier-limits)
-              window-decs  (window/check-many store identity-eid windows limits now)
-              pw           (tier/priority-weight tier-now)]
+              id-specs     (window/identity-specs identity-eid windows limits)
+              cls-specs    (window/class-specs tier-now windows global-limits)
+              window-decs  (window/check! store (into id-specs cls-specs) now)
+              ;; `or` (not just the :or default) so a present-but-nil
+              ;; config value still falls back to the defaults.
+              pw           (tier/priority-weight
+                            tier-now
+                            (or priority-weights tier/default-priority-weights))]
           (if (:allowed? window-decs)
             (let [tx (merge/classification-tx
                       classification incoming score-before scoring now)]
@@ -122,7 +132,8 @@
                          :tier            (name tier-now)
                          :retry_after_ms  0
                          :priority_weight pw}})
-            (do
+            (let [class?  (= :class (:scope window-decs))
+                  outcome (if class? :throttled-class :throttled)]
               ;; Throttle event log doesn't update score, so async is fine
               ;; here — no read-modify-write race to lose.
               (storage/transact-async!
@@ -130,8 +141,12 @@
                [{:request/identity identity-eid
                  :request/ts       now
                  :request/outcome  :throttled}])
-              (metrics/record-verify! registry :throttled tier-now
+              (metrics/record-verify! registry outcome tier-now
                                        (- (System/currentTimeMillis) start-ms))
+              ;; `:scope` is advisory host context (server-to-server), like
+              ;; :priority_weight: "class" = tier-wide back-pressure,
+              ;; "caller" = this caller's own bucket.
               (errors/error-response :E_RATE
                                      (:retry-after-ms window-decs)
-                                     {:priority_weight pw}))))))))
+                                     {:priority_weight pw
+                                      :scope (if class? "class" "caller")}))))))))

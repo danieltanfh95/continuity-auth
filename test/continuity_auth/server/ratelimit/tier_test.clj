@@ -72,6 +72,14 @@
             not 0 — an unrecognised tier shouldn't be treated as banned."
     (is (= 1.0 (tier/priority-weight :some-future-tier)))))
 
+(deftest priority-weight-reads-configured-map
+  (testing "The 2-arity reads weights from a supplied config map, not the
+            hardcoded defaults"
+    (is (= 7.0  (tier/priority-weight :tracked {:tracked 7.0 :anonymous 1.0})))
+    (is (= 99.0 (tier/priority-weight :anonymous {:anonymous 99.0}))))
+  (testing "A tier absent from the supplied map falls back to 1.0"
+    (is (= 1.0 (tier/priority-weight :tracked {:anonymous 1.0})))))
+
 (defspec p-priority-weight-monotone-with-tier 100
   (prop/for-all [s (gen/double* {:min 0.0 :max 1.0 :NaN? false :infinite? false})]
     (let [;; Construct two identities with the same score; one host-linked,

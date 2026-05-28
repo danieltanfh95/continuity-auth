@@ -163,8 +163,8 @@ Architecture, module structure, and per-request data flow: [`docs/architecture.m
 The goal of continuity-auth is to make device-continuity proof a viable trust signal for the open web. We aim to give every caller that can hold a private key (browser, CLI, daemon, mobile, hardware-anchored) a graceful, login-less path to a higher rate-limit tier through sustained, anomaly-free observation. Below are the tentative milestones. Priorities may shift with feedback.
 
 - **0.1.0** ~~Public API, wire envelope, and DB schema stable. Ed25519 / P-256 with non-extractable Web Crypto in the browser. CLI substrate with PEM keys. HMAC IP-hashing. Key rotation and revocation. Admin endpoints.~~ [Released 2026-05-26]
-- **0.2.0** Token-bucket recovery and `priority_weight` hint. Trusted callers recover from bursts at leak-rate granularity instead of at the window edge. `/v1/verify` exposes a numeric scheduling weight for host-side weighted fair queuing.
-- **0.3.0** Global per-tier capacity caps as a class-level back-pressure gate, orthogonal to per-caller buckets. Configurable bucket parameters so capacity, leak rate, and priority weight are independently tunable per tier rather than derived from a single knob.
+- **0.2.0** ~~Token-bucket recovery and `priority_weight` hint. Trusted callers recover from bursts at leak-rate granularity instead of at the window edge. `/v1/verify` exposes a numeric scheduling weight for host-side weighted fair queuing.~~ [Released 2026-05-27]
+- **0.3.0** ~~Global per-tier capacity caps as a class-level back-pressure gate, orthogonal to per-caller buckets. Configurable bucket parameters so capacity, leak rate, and priority weight are independently tunable per tier rather than derived from a single knob.~~ [Released 2026-05-28]
 - **0.4.0** Mobile support via hardware-anchored keys (iOS Secure Enclave, Android Keystore). The wire protocol already accommodates these. Only the client-side storage layer needs the new path.
 
 ## License

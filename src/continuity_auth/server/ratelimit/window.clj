@@ -1,7 +1,15 @@
 (ns continuity-auth.server.ratelimit.window
-  "Token-bucket-per-tier-per-window rate limiter.
+  "Token-bucket rate limiter, two scopes.
 
-  Algorithm (per identity, per window-keyword):
+  - Per-caller buckets: one per (identity, window), keyed
+    \"<identity-eid>|<window>\".
+  - Class buckets (back-pressure): one per (tier, window), keyed
+    \"tier:<tier>|<window>\", shared by all callers of a tier. A request
+    must pass BOTH its per-caller buckets and (when configured) its class
+    buckets. `check!` evaluates a seq of resolved bucket specs against a
+    single snapshot and allows iff every spec allows.
+
+  Algorithm (per bucket):
     - Persistent state: {:bucket/tokens <double>, :bucket/last-refill-ms <long>}
       keyed by `:bucket/key` = \"<identity-eid>|<window-name>\".
     - On each check at `now`:
@@ -42,6 +50,13 @@
   ^String [identity-eid window]
   (str (long identity-eid) "|" (name window)))
 
+(defn class-bucket-key
+  "Class (back-pressure) slot key for `(tier, window)`. The `\"tier:\"`
+  prefix can never collide with a per-caller key, whose prefix is a
+  numeric identity eid."
+  ^String [tier window]
+  (str "tier:" (name tier) "|" (name window)))
+
 (defn leak-rate-per-sec
   "Derive the steady-state leak rate from a window's capacity and
   duration. `(capacity / window-seconds)` keeps long-run throughput
@@ -50,6 +65,22 @@
   (if (and (pos? (long capacity)) (pos? (long window-seconds)))
     (/ (double capacity) (double window-seconds))
     0.0))
+
+(defn normalize-cell
+  "Normalize a per-(tier, window) limit cell to
+  `{:capacity <long>, :leak-per-sec <double>}`. A bare number is a
+  capacity whose leak rate is derived as `capacity / window-seconds`.
+  A map may carry an explicit `:leak-per-sec`; if absent it is derived.
+  Idempotent: a normalized map round-trips unchanged."
+  [cell window-seconds]
+  (if (map? cell)
+    (let [cap (long (or (:capacity cell) 0))]
+      {:capacity     cap
+       :leak-per-sec (double (or (:leak-per-sec cell)
+                                 (leak-rate-per-sec cap window-seconds)))})
+    (let [cap (long cell)]
+      {:capacity     cap
+       :leak-per-sec (leak-rate-per-sec cap window-seconds)})))
 
 (defn refill
   "Pure: compute the post-refill token count, capped at `capacity`.
@@ -91,11 +122,11 @@
      :tokens-after-refill tokens-after-refill}))
 
 (defn- read-bucket
-  "Indexed pull of the token-bucket entity for (identity, window). Returns
+  "Indexed pull of the token-bucket entity at `bucket-key-str`. Returns
   `{:db/id ..., :tokens ..., :last-refill-ms ...}` or nil if no entity
   exists at the slot yet."
-  [store snap identity-eid window]
-  (let [b (storage/pull store snap [:bucket/key (bucket-key identity-eid window)]
+  [store snap bucket-key-str]
+  (let [b (storage/pull store snap [:bucket/key bucket-key-str]
                         [:db/id :bucket/tokens :bucket/last-refill-ms])]
     (when (:db/id b)
       {:db/id          (:db/id b)
@@ -103,17 +134,21 @@
        :last-refill-ms (:bucket/last-refill-ms b)})))
 
 (defn- bucket-tx
-  "Build the transact payload for writing the new bucket state."
-  [existing identity-eid window new-tokens now-ms-val]
+  "Build the transact payload for writing the new bucket state from a
+  resolved spec (`:bucket-key`, `:scope`, `:identity-eid`, `:window`) and
+  its (possibly nil) existing entity. Class-scope buckets carry no
+  `:bucket/identity`."
+  [{:keys [bucket-key scope identity-eid window]} existing new-tokens now-ms-val]
   (if existing
     {:db/id                 (:db/id existing)
      :bucket/tokens         (double new-tokens)
      :bucket/last-refill-ms (long now-ms-val)}
-    {:bucket/key            (bucket-key identity-eid window)
-     :bucket/identity       identity-eid
-     :bucket/window         window
-     :bucket/tokens         (double new-tokens)
-     :bucket/last-refill-ms (long now-ms-val)}))
+    (cond-> {:bucket/key            bucket-key
+             :bucket/window         window
+             :bucket/scope          scope
+             :bucket/tokens         (double new-tokens)
+             :bucket/last-refill-ms (long now-ms-val)}
+      (= scope :identity) (assoc :bucket/identity (long identity-eid)))))
 
 (defn consume-token!
   "Check whether a request is permitted under the token-bucket for
@@ -143,59 +178,113 @@
         window-ms  (* 1000 (long window-seconds))
         leak-rate  (leak-rate-per-sec capacity window-seconds)
         snap       (storage/snapshot store)
-        existing   (read-bucket store snap identity-eid window)
+        bk         (bucket-key identity-eid window)
+        existing   (read-bucket store snap bk)
+        spec       {:bucket-key bk :scope :identity
+                    :identity-eid identity-eid :window window}
         d          (decision (:tokens existing)
                              (:last-refill-ms existing)
                              capacity leak-rate window-ms now-ms-val)]
     (when (:allowed? d)
       (storage/transact!
        store
-       [(bucket-tx existing identity-eid window
-                   (:new-tokens d) now-ms-val)]))
+       [(bucket-tx spec existing (:new-tokens d) now-ms-val)]))
     {:allowed?       (:allowed? d)
      :retry-after-ms (:retry-after-ms d)
      :tokens-after   (:new-tokens d)
      :limit          (long capacity)}))
 
-(defn check-many
-  "Check multiple windows for one identity. Returns the most-restrictive
-  outcome — the request is allowed only if ALL windows allow. If any
-  throttles, that decision is returned with the maximum
-  `retry-after-ms` across denying windows. When all allow, all
-  windows' buckets are upserted in a single transaction.
+(defn identity-specs
+  "Build per-caller bucket specs for `identity-eid` across `windows`.
+  `limits` maps window-keyword → cell (a bare capacity number or a
+  `{:capacity :leak-per-sec}` map); a missing entry is capacity 0 (always
+  throttles). `windows` is a seq of `{:window <kw>, :seconds <long>}`."
+  [identity-eid windows limits]
+  (mapv (fn [{:keys [window seconds]}]
+          (let [{:keys [capacity leak-per-sec]}
+                (normalize-cell (get limits window 0) seconds)]
+            {:bucket-key   (bucket-key identity-eid window)
+             :scope        :identity
+             :identity-eid (long identity-eid)
+             :tier         nil
+             :window       window
+             :window-ms    (* 1000 (long seconds))
+             :capacity     capacity
+             :leak-per-sec leak-per-sec}))
+        windows))
 
-  `windows` is a seq of `{:window <keyword>, :seconds <long>}`. `limits`
-  is a map of window-keyword to integer capacity (typically produced
-  by `tier/limits-for`); a missing or zero entry always throttles."
-  [store identity-eid windows limits ^java.util.Date now]
+(defn class-specs
+  "Build class (back-pressure) bucket specs for `tier` across `windows`.
+  `class-limits` maps tier-keyword → {window-keyword → cell}. Returns
+  specs only for the windows that have a configured cap for this tier;
+  an empty seq when the tier has no class cap at all."
+  [tier windows class-limits]
+  (let [tier-caps (get class-limits tier)]
+    (if (empty? tier-caps)
+      []
+      (into []
+            (keep (fn [{:keys [window seconds]}]
+                    (when-let [cell (get tier-caps window)]
+                      (let [{:keys [capacity leak-per-sec]}
+                            (normalize-cell cell seconds)]
+                        {:bucket-key   (class-bucket-key tier window)
+                         :scope        :class
+                         :identity-eid nil
+                         :tier         tier
+                         :window       window
+                         :window-ms    (* 1000 (long seconds))
+                         :capacity     capacity
+                         :leak-per-sec leak-per-sec}))))
+            windows))))
+
+(defn check!
+  "Evaluate a seq of resolved bucket `specs` (see `identity-specs` /
+  `class-specs`) against a single snapshot. The request is allowed only
+  if EVERY spec allows. On allow, every bucket is upserted with one fewer
+  token in a single transaction. On any deny, NOTHING is written (no
+  bucket is penalized for another's denial) and the most-restrictive
+  outcome is returned, tagged with the denying `:scope`.
+
+    allow → {:allowed? true,  :retry-after-ms 0}
+    deny  → {:allowed? false, :retry-after-ms <long>, :limit <long>,
+             :scope (:identity | :class)}"
+  [store specs ^java.util.Date now]
   (let [now-ms-val (now-ms now)
         snap       (storage/snapshot store)
         read-pass
-        (mapv (fn [{:keys [window seconds] :as w}]
-                (let [capacity   (long (get limits window 0))
-                      window-ms  (* 1000 (long seconds))
-                      leak-rate  (leak-rate-per-sec capacity seconds)
-                      existing   (read-bucket store snap identity-eid window)
-                      d          (decision (:tokens existing)
-                                           (:last-refill-ms existing)
-                                           capacity leak-rate window-ms now-ms-val)]
-                  (assoc w
-                         :limit          capacity
+        (mapv (fn [{:keys [window-ms capacity leak-per-sec bucket-key] :as spec}]
+                (let [existing (read-bucket store snap bucket-key)
+                      d        (decision (:tokens existing)
+                                         (:last-refill-ms existing)
+                                         capacity leak-per-sec window-ms now-ms-val)]
+                  (assoc spec
                          :existing       existing
                          :decision       d
                          :would-allow?   (:allowed? d)
                          :retry-after-ms (:retry-after-ms d))))
-              windows)]
-    (if-let [denials (seq (filter (complement :would-allow?) read-pass))]
+              specs)]
+    (if-let [denials (seq (remove :would-allow? read-pass))]
       (let [worst (apply max-key :retry-after-ms denials)]
         {:allowed?       false
          :retry-after-ms (:retry-after-ms worst)
-         :limit          (:limit worst)})
+         :limit          (:capacity worst)
+         :scope          (:scope worst)})
       (do
-        (storage/transact!
-         store
-         (vec (for [{:keys [window existing decision]} read-pass]
-                (bucket-tx existing identity-eid window
-                           (:new-tokens decision) now-ms-val))))
+        (when (seq read-pass)
+          (storage/transact!
+           store
+           (mapv (fn [{:keys [existing decision] :as spec}]
+                   (bucket-tx spec existing (:new-tokens decision) now-ms-val))
+                 read-pass)))
         {:allowed? true
          :retry-after-ms 0}))))
+
+(defn check-many
+  "Backward-compatible wrapper: check only the per-caller buckets for one
+  identity across `windows` under `limits`. Delegates to `check!`.
+
+  `windows` is a seq of `{:window <keyword>, :seconds <long>}`. `limits`
+  maps window-keyword → cell (bare capacity or `{:capacity :leak-per-sec}`);
+  a missing or zero entry always throttles."
+  [store identity-eid windows limits ^java.util.Date now]
+  (check! store (identity-specs identity-eid windows limits) now))

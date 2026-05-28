@@ -35,8 +35,15 @@
   secret, hex-encoded. Equality is preserved (same IP under a fixed key
   → same hash), so cluster grouping is unchanged; only the
   representation-at-rest is pseudonymous. See
-  `continuity-auth.server.crypto.ip-hmac` for the keystore."
-  3)
+  `continuity-auth.server.crypto.ip-hmac` for the keystore.
+
+  v4 (2026-05-28): add `:bucket/scope` (`:identity` | `:class`) to
+  distinguish per-caller buckets from class-level back-pressure buckets.
+  Additive: Datalevin picks up the new attribute on open; old per-caller
+  buckets lack it (sparse) and read as nil. Class buckets are keyed
+  `\"tier:<tier>|<window>\"` and carry no `:bucket/identity`. No data
+  rewrite — the migration only stamps the version."
+  4)
 
 (def schema
   "Datalevin attribute schema, one entry per attribute. The schema is
@@ -215,11 +222,14 @@
    {:db/valueType :db.type/boolean}
 
    ;; -- bucket (token-bucket rate-limit accounting) -----------------------
-   ;; `:bucket/key` is the per-(identity, window) slot key —
-   ;; `"<identity-eid>|<window-name>"` — with `:db.unique/identity` so
-   ;; concurrent writes upsert into one entity. Each (identity, window)
-   ;; has at most one bucket entity; state evolves over time via
-   ;; `:bucket/tokens` and `:bucket/last-refill-ms`.
+   ;; `:bucket/key` is the slot key with `:db.unique/identity` so concurrent
+   ;; writes upsert into one entity. Two scopes share the same attributes:
+   ;;   - per-caller: key `"<identity-eid>|<window-name>"`, `:bucket/scope
+   ;;     :identity`, `:bucket/identity` set.
+   ;;   - class (back-pressure): key `"tier:<tier>|<window-name>"`,
+   ;;     `:bucket/scope :class`, no `:bucket/identity`. One bucket shared
+   ;;     by all callers of a tier+window.
+   ;; State evolves over time via `:bucket/tokens` and `:bucket/last-refill-ms`.
    ;;
    ;; `:bucket/start` and `:bucket/count` are legacy attributes from the
    ;; pre-token-bucket sliding-window scheme. They remain declared in
@@ -238,6 +248,10 @@
    :bucket/window
    {:db/valueType :db.type/keyword
     :db/index     true}                   ; :1m | :5m | :1d | ...
+
+   :bucket/scope
+   {:db/valueType :db.type/keyword
+    :db/index     true}                   ; :identity | :class
 
    :bucket/tokens
    {:db/valueType :db.type/double}

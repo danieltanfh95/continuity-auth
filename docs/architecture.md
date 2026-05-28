@@ -42,8 +42,8 @@ High-level overview. The conceptual model lives in `ontology.md`, the wire proto
 │   Cluster classification (identity/merge.clj)               │
 │        pubkey-anchored attach OR new tuple in cluster       │
 │                                                             │
-│   Sliding-window-counter (ratelimit/window.clj)             │
-│        check + transact bucket                              │
+│   Token-bucket check (ratelimit/window.clj)                 │
+│        per-caller + class buckets → transact all            │
 │                                                             │
 │   Datalevin (LMDB or dtlv:// server)                         │
 │        identity, tuple, pubkey, request, trust-event,       │
@@ -72,9 +72,13 @@ This is what makes the decision TOCTOU-safe (invariant I10) and keeps response l
 
 ### Rate-limit engine: token-bucket per tier per window
 
-Each `(identity, window)` pair has one token-bucket entity keyed by `:bucket/key = "<identity-eid>|<window>"`. Capacity is the per-tier per-window value from `:ratelimit/:tiers` in config (e.g. `:tracked {:1m 30 :5m 120 :1d 5000}`). Leak rate is derived as `capacity / window-seconds`, which makes steady-state throughput identical to the prior sliding-window engine. The difference is the recovery shape under burst: `retry_after_ms` is the time until the next token leaks back into the bucket, not the time until the window edge. A trusted caller who exhausts a `:1m` budget recovers within a few hundred milliseconds rather than tens of seconds.
+Each `(identity, window)` pair has one token-bucket entity keyed by `:bucket/key = "<identity-eid>|<window>"`. Capacity is the per-tier per-window value from `:ratelimit/:tiers` in config (e.g. `:tracked {:1m 30 :5m 120 :1d 5000}`). Leak rate defaults to `capacity / window-seconds`, which makes steady-state throughput identical to the prior sliding-window engine. The difference is the recovery shape under burst: `retry_after_ms` is the time until the next token leaks back into the bucket, not the time until the window edge. A trusted caller who exhausts a `:1m` budget recovers within a few hundred milliseconds rather than tens of seconds.
 
-The verify response surfaces `:priority_weight`, a numeric proxy for tier that hosts can use as a weighted-fair-queuing weight. continuity-auth itself does not hold connections or implement priority admission (that would turn the trust service into a deployment liability). Priority queuing belongs in the host backend or a sidecar, and `priority_weight` is the integration seam.
+**Independent leak rate.** A `:tiers` cell may be a bare number (capacity, leak derived as above) or a map `{:capacity <long> :leak-per-sec <double>}` that sets the leak rate independently of capacity. The cell is normalized to the map form once at spec-build time (`window/normalize-cell`); the pure `refill`/`decision` arithmetic is unchanged. This lets an operator decouple burst size from steady-state drain — a large `:capacity` with a small `:leak-per-sec` absorbs spikes but refills slowly.
+
+**Class-level back-pressure caps.** Per-caller buckets bound each identity; they do not bound the aggregate. Ten thousand distinct anonymous identities, each within its own budget, can collectively saturate the service — the structural answer to "what stops 1000 farmed keys." `:ratelimit/:class-caps` adds one shared bucket per `(tier, window)`, keyed `:bucket/key = "tier:<tier>|<window>"` (no collision with the numeric per-caller keys) and tagged `:bucket/scope :class` with no `:bucket/identity`. Because production runs multiple stateless instances over one Datalevin server, the cap must be shared state, so the class bucket is an ordinary DB entity read and written in the **same** snapshot+transact as the per-caller buckets — no extra round trip. A request must pass both gates; the handler runs one `check!` over the concatenated per-caller and class specs, allows iff every spec allows, and on allow writes every bucket in one transaction. A denial at either gate writes nothing (a caller is not charged for a class-level shed) and the 429 reports which gate fired via `scope` (`"caller"` vs `"class"`). The cap inherits the same bounded read-then-write overshoot the per-caller buckets already document; it's a soft back-pressure floor, and CAS/token-leasing is noted as future hardening. Off by default (absent `:class-caps`).
+
+The verify response surfaces `:priority_weight`, a numeric proxy for tier that hosts can use as a weighted-fair-queuing weight. The defaults mirror the `:1m` capacity ratios but are overridable via `:ratelimit/:priority-weights`; the handler reads the configured map (falling back to defaults, and to `1.0` for an unknown tier). continuity-auth itself does not hold connections or implement priority admission (that would turn the trust service into a deployment liability). Priority queuing belongs in the host backend or a sidecar, and `priority_weight` is the integration seam.
 
 ### Pure-where-possible, transactional-where-necessary
 
@@ -129,13 +133,13 @@ Decisions that shaped the architecture and shouldn't be re-litigated without rea
 - **Non-extractable Web Crypto keys.** XSS cannot exfiltrate. Cost: legacy browser support requires the P-256 fallback.
 - **Async transact-after-response.** Decouples write latency from decision latency. Cost: bounded event loss on crash, acceptable for statistical event data.
 - **Strict `:db.unique/value` for nonces.** Upsert semantics (`:db.unique/identity`) would silently allow replays.
-- **Sliding-window-counter, not sliding-log.** O(1) per check. The approximation error is bounded and acceptable for opportunistic-abuse defense.
+- **Token-bucket, not sliding-log.** O(1) per check, with burst absorption up to capacity and a recovery shape (next-token-leak) friendlier to trusted callers than window-edge resets. Leak rate is configurable per cell.
 - **No weak-attach in v1.** Cluster merge requires pubkey match or host-link attestation, no IP/fp-only continuity. Simpler, harder to poison.
 - **ClojureScript-only client.** No hand-written JS facade. shadow-cljs `:target :npm-module` provides the JS distribution.
 
 ## Trade-offs accepted
 
-- **Sliding-window-counter approximation** can under-count by up to ~prev-bucket-count for non-uniform bursts at bucket edges. Documented in `ratelimit/window.clj`.
+- **Read-then-write token-bucket overshoot.** Concurrent verifies for the same bucket read the same snapshot, so under flood a bucket can briefly serve slightly more than capacity before the writes settle. Bounded and acceptable for opportunistic-abuse defense; the class-cap bucket inherits the same property. Documented in `ratelimit/window.clj`. CAS/token-leasing is noted as future hardening.
 - **5-second event-loss window** on app crash (async transact). Documented in `risk-register #7` in the plan.
 - **Anonymous tier is intentionally low value.** Bootstrap is cheap, sybil gains nothing. Tier uplift requires sustained observation or host-link.
 - **Client lib bundle ≤ 40 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is 31.79 KB. Future fingerprint signals can blow this. We will favor signal removal over budget increase.

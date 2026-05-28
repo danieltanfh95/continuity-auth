@@ -13,7 +13,7 @@ The conceptual model. Everything else (schema, merge algorithm, rate-limit engin
 | `TrustEvent` | An explicit modification to an identity's trust score (audit trail). | EID | No — bound to one identity |
 | `Nonce` | A one-shot anti-replay token. | Hash of the raw nonce (we never store the raw nonce). | Self |
 | `HostLink` | Attestation by the host application: "host_user_id `X` belongs to identity `I`." | `(host-id, host-user-id)` pair | No — bound to one identity |
-| `Bucket` | Token-bucket accounting unit, one per `(identity, window)`. State: `:bucket/tokens` (current count, double) + `:bucket/last-refill-ms` (epoch ms). Tokens refill at `capacity / window-seconds`. | `(identity, window)` | No — bound to one identity |
+| `Bucket` | Token-bucket accounting unit. Two scopes: a per-caller bucket, one per `(identity, window)`, and a class bucket, one per `(tier, window)`, that every caller of a tier draws from collectively (back-pressure). State for both: `:bucket/tokens` (current count, double) + `:bucket/last-refill-ms` (epoch ms). `:bucket/scope` is `:identity` or `:class`. Tokens refill at a leak rate that defaults to `capacity / window-seconds` but is independently configurable. | `(scope, identity-or-tier, window)` | No — bound to one identity (`:identity` scope) or to a tier (`:class` scope) |
 | `EraseStub` | Audit trace of a GDPR erasure. Hashed identity-id only; no user data. | EID + `:erase-stub/identity-hash` | Self (long-lived) |
 
 A "Person" is not an entity in this system. We track clusters, and clusters are evidence-based proxies for persons. Two clusters can refer to one person (post-erasure regeneration, multiple devices without host-link). One cluster can in principle refer to multiple people (shared device with a shared keypair, such as a browser profile shared across users or a CLI `$CONTINUITY_AUTH_HOME` shared across operators). The system does not claim to identify persons.
@@ -96,7 +96,18 @@ tier(score, host-linked?) =
     :banned      if score < 0.05
 ```
 
-`limits(tier, window)` is a static lookup table loaded from config.
+`limits(tier, window)` is a lookup table loaded from config. Each cell
+carries a bucket capacity and a leak rate; the leak rate defaults to
+`capacity / window-seconds` but is independently configurable, so a tier
+can have a large burst capacity with a slow steady drain or vice versa.
+The per-tier `priority_weight` surfaced to hosts is likewise config-driven.
+
+Orthogonal to these per-caller limits, an optional **class cap** sets a
+shared ceiling per `(tier, window)` across all callers of that tier. A
+request must pass BOTH its per-caller bucket and (if configured) its
+class bucket. The class cap is back-pressure: it bounds aggregate tier
+throughput regardless of how many distinct identities appear, so a flood
+of well-behaved-individually callers cannot collectively swamp the service.
 
 Score deltas:
 
@@ -180,7 +191,8 @@ This is structurally identical to pdsa's "challenge-response with a client-deriv
 | I5 | A tuple cannot be created with a pubkey-ref whose `:pubkey/revoked-at` is set. | Verify step rejects revoked-key envelopes upstream of tuple creation. |
 | I6 | Two distinct identities never share a pubkey thumbprint. | I1; merge logic in §8. |
 | I7 | A `HostLink` in `:pending` state does not cause a cross-identity merge. | §8 step 3 is gated on `cool-until` elapsed AND no admin abort. |
-| I8 | At most 2 buckets per `(identity, window-size)` at any time. | Bucket allocator in `ratelimit/window.clj`. |
+| I8 | Exactly one bucket per `(identity, window)` and exactly one class bucket per `(tier, window)`. | `:bucket/key` is `:db.unique/identity` (`"<eid>\|<window>"` or `"tier:<tier>\|<window>"`); concurrent writes upsert into one entity. |
+| I11 | A request is admitted only if it passes its per-caller bucket AND, when a class cap is configured for its tier+window, the class bucket too. A denial by either consumes no tokens from any bucket. | `ratelimit/window.clj` `check!` — allow iff all specs allow; transact only on full allow. |
 | I9 | Erasure removes all identity-bearing entities; only an `EraseStub` remains. | Erasure transaction is one big tx; tested in adversarial suite. |
 | I10 | Every `/verify` decision is computed from a single consistent read snapshot of the DB. | One read tx per request; write is `transact-async` after the response is dispatched. |
 

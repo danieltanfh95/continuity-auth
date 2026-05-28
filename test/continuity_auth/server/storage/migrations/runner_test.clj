@@ -209,3 +209,43 @@
               (protocol/close storage))))
         (finally
           (delete-recursively dir))))))
+
+(deftest v3-to-v4-migration-adds-bucket-scope
+  (testing "v3→v4 is additive: stamps version 4, no data rewrite, and the
+            new :bucket/scope attribute becomes writable (class buckets)."
+    (let [dir  (temp-dir)
+          path (.toString dir)]
+      (try
+        ;; Seed a v3 store: legacy v2 fixture, then migrate up to v3.
+        (seed-v2-store! path ["203.0.113.7"])
+        (let [storage (dtlv/open path)]
+          (try
+            (runner/migrate! storage {:ip-hmac-key fixed-key} 3)
+            (let [result (runner/migrate! storage {} 4)]
+              (is (= :upgraded result))
+              (testing "schema-version is now 4"
+                (let [v (->> (protocol/q storage (protocol/snapshot storage)
+                                         '[:find [?v ...]
+                                           :where [_ :schema/version ?v]] [])
+                             sort last)]
+                  (is (= 4 v))))
+              (testing "a class bucket (scope :class, no :bucket/identity) writes cleanly"
+                (protocol/transact! storage
+                                    [{:bucket/key            "tier:anonymous|1m"
+                                      :bucket/window         :1m
+                                      :bucket/scope          :class
+                                      :bucket/tokens         1.0
+                                      :bucket/last-refill-ms 0}])
+                (let [scope (->> (protocol/q storage (protocol/snapshot storage)
+                                             '[:find [?s ...]
+                                               :where
+                                               [?b :bucket/key "tier:anonymous|1m"]
+                                               [?b :bucket/scope ?s]] [])
+                                 first)]
+                  (is (= :class scope))))
+              (testing "re-running v3→v4 is idempotent (:ok)"
+                (is (= :ok (runner/migrate! storage {} 4)))))
+            (finally
+              (protocol/close storage))))
+        (finally
+          (delete-recursively dir))))))

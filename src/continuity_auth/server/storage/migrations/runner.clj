@@ -78,7 +78,15 @@
           (when-not ip-hmac-key
             (throw (ex-info "v2→v3 migration requires :ip-hmac-key in ctx" {})))
           (rehash-tuple-ips! storage ip-hmac-key)
-          (protocol/transact! storage [{:schema/version 3}]))]])
+          (protocol/transact! storage [{:schema/version 3}]))]
+
+   ;; -- v3 → v4: add :bucket/scope for per-caller vs class buckets -----
+   ;; The new `:bucket/scope` attribute is declared in the schema map;
+   ;; Datalevin's schema-on-open picks it up. Existing per-caller buckets
+   ;; lack it (sparse, read as nil) and the algorithm tolerates that.
+   ;; Additive — no data rewrite; this only stamps the version.
+   [3 4 (fn install-v4 [storage _ctx]
+          (protocol/transact! storage [{:schema/version 4}]))]])
 
 (defn- migrations-from [from-version target-version]
   (->> migrations

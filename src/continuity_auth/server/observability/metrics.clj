@@ -47,7 +47,10 @@
 
 (defn record-verify!
   "Record a /verify outcome to metrics. `outcome` ∈ #{:ok :throttled
-  :forbidden :unauthorized :rate-limited :replay :bad-request :internal}."
+  :throttled-class :forbidden :unauthorized :rate-limited :replay
+  :bad-request :internal}. `:throttled` is a per-caller bucket denial;
+  `:throttled-class` is a class-level back-pressure denial — graph them
+  separately to tell 'this caller is hot' from 'the tier is saturated'."
   [registry outcome tier latency-ms]
   (when registry
     (prom/inc  registry :cauth/verify-total {:outcome (name outcome)

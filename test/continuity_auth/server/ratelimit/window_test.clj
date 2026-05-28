@@ -202,6 +202,138 @@
             ;; :1m bucket should be nil (no entity written) because :5m denied.
             (is (nil? (:bucket/tokens b1m)))))))))
 
+;; -- normalize-cell ------------------------------------------------------
+
+(deftest normalize-cell-bare-derives-leak
+  (testing "A bare number is capacity; leak derived as capacity/window-seconds"
+    (is (= {:capacity 30 :leak-per-sec 0.5} (window/normalize-cell 30 60)))
+    (is (= {:capacity 0  :leak-per-sec 0.0} (window/normalize-cell 0 60)))))
+
+(deftest normalize-cell-map-passes-explicit-leak
+  (testing "A map with :leak-per-sec is used verbatim (independent of capacity)"
+    (is (= {:capacity 10 :leak-per-sec 5.0}
+           (window/normalize-cell {:capacity 10 :leak-per-sec 5.0} 60)))))
+
+(deftest normalize-cell-map-without-leak-derives
+  (testing "A map lacking :leak-per-sec derives it from capacity/window-seconds"
+    (is (= {:capacity 120 :leak-per-sec 0.4}
+           (window/normalize-cell {:capacity 120} 300)))))
+
+(deftest normalize-cell-idempotent
+  (testing "Normalizing an already-normalized cell round-trips"
+    (let [n (window/normalize-cell 30 60)]
+      (is (= n (window/normalize-cell n 60))))))
+
+;; -- class-bucket keys + specs -------------------------------------------
+
+(deftest class-bucket-key-prefixed
+  (is (= "tier:anonymous|1m" (window/class-bucket-key :anonymous :1m)))
+  (testing "class keys never collide with per-caller (numeric-prefixed) keys"
+    (is (not= (window/class-bucket-key :anonymous :1m)
+              (window/bucket-key 1 :1m)))))
+
+(deftest class-specs-empty-when-no-cap
+  (let [windows [{:window :1m :seconds 60}]]
+    (is (= [] (window/class-specs :tracked windows {})))
+    (is (= [] (window/class-specs :tracked windows nil)))
+    (is (= [] (window/class-specs :tracked windows {:anonymous {:1m 2000}})))))
+
+(deftest class-specs-only-configured-windows
+  (testing "Only windows with a configured cap produce specs"
+    (let [windows [{:window :1m :seconds 60} {:window :5m :seconds 300}]
+          specs   (window/class-specs :anonymous windows {:anonymous {:1m 2000}})]
+      (is (= 1 (count specs)))
+      (is (= :class (:scope (first specs))))
+      (is (= :anonymous (:tier (first specs))))
+      (is (nil? (:identity-eid (first specs))))
+      (is (= "tier:anonymous|1m" (:bucket-key (first specs))))
+      (is (= 2000 (:capacity (first specs)))))))
+
+;; -- check! with class caps (back-pressure) ------------------------------
+
+(def ^:private win-1m [{:window :1m :seconds 60}])
+
+(defn- anon-check!
+  "Per-caller (high) + class cap for the anonymous tier on :1m."
+  [store eid class-cap now]
+  (window/check! store
+                 (into (window/identity-specs eid win-1m {:1m 100})
+                       (window/class-specs :anonymous win-1m
+                                           {:anonymous {:1m class-cap}}))
+                 now))
+
+(deftest class-cap-throttles-aggregate-across-identities
+  (testing "A class cap denies once the shared tier bucket is exhausted,
+            even though no single caller hit its own budget"
+    (with-store
+      (fn [store]
+        (let [id1 (new-identity! store)
+              id2 (new-identity! store)
+              now (Date.)]
+          ;; class cap 3; id1 spends all three (caller budget is 100).
+          (dotimes [_ 3]
+            (is (:allowed? (anon-check! store id1 3 now))))
+          ;; id2's first-ever call is denied by the CLASS bucket.
+          (let [r (anon-check! store id2 3 now)]
+            (is (false? (:allowed? r)))
+            (is (= :class (:scope r)))
+            ;; class deny must NOT consume id2's per-caller bucket.
+            (let [snap (storage/snapshot store)
+                  b    (storage/pull store snap
+                                     [:bucket/key (window/bucket-key id2 :1m)]
+                                     [:bucket/tokens])]
+              (is (nil? (:bucket/tokens b))))))))))
+
+(deftest caller-deny-tagged-identity-scope
+  (testing "A per-caller bucket denial is tagged :identity, not :class"
+    (with-store
+      (fn [store]
+        (let [eid (new-identity! store)
+              now (Date.)
+              ;; caller :1m capacity 1, no class cap.
+              specs (window/identity-specs eid win-1m {:1m 1})]
+          (is (:allowed? (window/check! store specs now)))
+          (let [r (window/check! store specs now)]
+            (is (false? (:allowed? r)))
+            (is (= :identity (:scope r)))))))))
+
+(deftest check!-allow-writes-both-caller-and-class-buckets
+  (with-store
+    (fn [store]
+      (let [eid (new-identity! store)
+            now (Date.)]
+        (is (:allowed? (anon-check! store eid 3 now)))
+        (let [snap  (storage/snapshot store)
+              caller (storage/pull store snap
+                                   [:bucket/key (window/bucket-key eid :1m)]
+                                   [:bucket/tokens :bucket/scope])
+              klass  (storage/pull store snap
+                                   [:bucket/key (window/class-bucket-key :anonymous :1m)]
+                                   [:bucket/tokens :bucket/scope :bucket/identity])]
+          (is (= 99.0 (:bucket/tokens caller)))
+          (is (= :identity (:bucket/scope caller)))
+          (is (= 2.0 (:bucket/tokens klass)))
+          (is (= :class (:bucket/scope klass)))
+          (testing "class bucket carries no :bucket/identity"
+            (is (nil? (:bucket/identity klass)))))))))
+
+(deftest independent-leak-rate-from-map-cell
+  (testing "A {:capacity :leak-per-sec} cell uses the explicit leak, not
+            capacity/window-seconds"
+    (with-store
+      (fn [store]
+        (let [eid   (new-identity! store)
+              now   (Date.)
+              ;; capacity 10, leak 5/sec (NOT 10/60). Burst 10, 11th denied.
+              specs (window/identity-specs eid win-1m
+                                           {:1m {:capacity 10 :leak-per-sec 5.0}})]
+          (dotimes [_ 10]
+            (is (:allowed? (window/check! store specs now))))
+          (let [r (window/check! store specs now)]
+            (is (false? (:allowed? r)))
+            ;; one token at 5/sec = 200 ms (vs ~6000 ms if leak were derived).
+            (is (= 200 (:retry-after-ms r)))))))))
+
 ;; -- property tests ------------------------------------------------------
 ;;
 ;; Invariants over a sequence of consume calls with arbitrary capacity,

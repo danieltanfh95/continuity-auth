@@ -90,7 +90,18 @@ Main rate-limit decision path. The host backend calls this for every request it 
 }
 ```
 
-**Response (429, throttle):** standard error shape with `code = "E_RATE"`, `retry_after_ms > 0`, and `priority_weight` carried through so hosts can place the failed request into a tiered retry queue.
+**Response (429, throttle):** standard error shape with `code = "E_RATE"`, `retry_after_ms > 0`, and `priority_weight` carried through so hosts can place the failed request into a tiered retry queue. An optional `scope` field names which gate fired:
+
+```json
+{ "ok": false, "code": "E_RATE", "retry_after_ms": 1200, "priority_weight": 1.0, "scope": "class" }
+```
+
+| `scope`   | Meaning |
+|-----------|---------|
+| `"caller"` | This identity drained its own per-caller bucket. Back-pressure is specific to this key. |
+| `"class"`  | The shared per-tier ceiling is saturated; the tier as a whole is shedding load even though this caller may be within its own budget. |
+
+`scope` is advisory: hosts that don't branch on it can ignore it. It exists so a host can tell "this caller is hot" (raise their bar / queue them) from "the service is busy" (back off and retry the whole tier later). Absent when no class cap is configured.
 
 **`priority_weight`** is a host-side scheduling input: a relative weight for weighted fair queuing or priority admission. continuity-auth itself does **not** enforce priority. Hosts may consult the weight to order their own queues or ignore it entirely. Default values mirror the `:1m` capacity ratios in `:ratelimit/:tiers`:
 
@@ -101,9 +112,13 @@ Main rate-limit decision path. The host backend calls this for every request it 
 | `penalized`  | 0.0               |
 | `banned`     | 0.0               |
 
-The numeric scale is advisory and non-normative. Hosts that want a different ordering can map the `tier` string directly. The weight is included so the common case (weighted fair queuing keyed on tier) requires zero host-side configuration.
+The numeric scale is advisory and non-normative. Hosts that want a different ordering can map the `tier` string directly. The weight is included so the common case (weighted fair queuing keyed on tier) requires zero host-side configuration. The table above is the default; operators can override any tier's weight via `:ratelimit/:priority-weights` (see config knobs below), and the value returned in `priority_weight` reflects the configured map.
 
-**Rate-limit shape:** the per-tier limits in `:ratelimit/:tiers` are token-bucket capacities. Each window has its own bucket per identity with `leak_rate = capacity / window_seconds`. Bursts up to `capacity` are absorbed and steady-state throughput equals `leak_rate`. `retry_after_ms` is the time until the next token leaks in, not the time until the window edge. Trusted callers recover faster from short bursts than they did under the prior sliding-window engine.
+**Rate-limit shape:** the per-tier limits in `:ratelimit/:tiers` are token-bucket capacities. Each window has its own bucket per identity. Bursts up to `capacity` are absorbed and steady-state throughput equals the leak rate. `retry_after_ms` is the time until the next token leaks in, not the time until the window edge. Trusted callers recover faster from short bursts than they did under the prior sliding-window engine.
+
+**Configurable bucket parameters.** A `:ratelimit/:tiers` cell may be a bare number (capacity; leak derived as `capacity / window_seconds`, the v0.2 behavior) **or** a map `{:capacity <long> :leak-per-sec <double>}` that sets the leak rate independently — e.g. a large burst capacity with a slow steady drain. Both forms are accepted per-cell; a bare number and the derived-leak map are equivalent.
+
+**Class-level back-pressure caps.** Per-caller buckets bound each identity but not the *aggregate*: many distinct identities, each within its own budget, can collectively swamp a tier. `:ratelimit/:class-caps` adds one shared bucket per `(tier, window)` that all callers of that tier draw from. A request must pass **both** its own per-caller bucket **and** its tier's class bucket; a denial at either gate consumes no tokens at the other (a caller isn't penalized for a class-level shed). Class caps are per-tier, per-window, with the same bare-number-or-map cell shape as `:tiers`. Only the `(tier, window)` pairs you list are capped; the feature is **off by default** (absent `:class-caps` ⇒ pure per-caller behavior, identical to v0.2). When a class cap fires, the 429 carries `scope: "class"`.
 
 **Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN` (revoked key, banned tier), `E_REPLAY`, `E_RATE`.
 

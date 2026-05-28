@@ -116,13 +116,21 @@
 
 ;; -- HTTP harness ----------------------------------------------------------
 
+(def ^:private default-tier-limits
+  {:anonymous {:1m 5  :5m 50  :1d 1000}
+   :tracked   {:1m 30 :5m 120 :1d 5000}
+   :penalized {:1m 0  :5m 1   :1d 20}
+   :banned    {:1m 0  :5m 0   :1d 1}})
+
 (defn- with-running-system
   ([f] (with-running-system {} f))
-  ([{:keys [clock grace-seconds keystore config registry bearer]
+  ([{:keys [clock grace-seconds keystore config registry bearer
+            tier-limits global-limits priority-weights]
      :or {clock         (fn [] (Date.))
           grace-seconds 86400
           keystore      nil
-          config        {}}}
+          config        {}
+          tier-limits   default-tier-limits}}
     f]
    (let [dir   (temp-dir)
          store (dtlv/open (.toString dir))
@@ -139,10 +147,9 @@
                    :windows            [{:window :1m :seconds 60}
                                          {:window :5m :seconds 300}
                                          {:window :1d :seconds 86400}]
-                   :tier-limits        {:anonymous {:1m 5  :5m 50  :1d 1000}
-                                         :tracked   {:1m 30 :5m 120 :1d 5000}
-                                         :penalized {:1m 0  :5m 1   :1d 20}
-                                         :banned    {:1m 0  :5m 0   :1d 1}}}
+                   :tier-limits        tier-limits
+                   :global-limits      global-limits
+                   :priority-weights   priority-weights}
                   {:trusted-cidrs []
                    :ip-header     "x-forwarded-for"
                    ;; Fixed test key so the ingress hashing is deterministic
@@ -307,6 +314,68 @@
       (let [r (http-post port "/v1/verify" {:envelope {:bogus true}})]
         (is (= 400 (:status r)))
         (is (= "E_BAD_REQUEST" (-> r :body :code)))))))
+
+;; -- v0.3.0: configurable priority weight + class-level back-pressure -----
+
+(defn- boot-and-verify!
+  "Bootstrap a fresh keypair and issue one /verify. Returns the verify
+  response. Each call is a distinct identity (fresh key + fp)."
+  [port]
+  (let [kp (gen-ed25519)
+        fp (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+        {:keys [wire pubkey-b64]} (build-bootstrap-envelope
+                                   {:sk (:sk kp) :pk-bytes (:pk-bytes kp)
+                                    :ts (iso8601-now) :host-user-id "" :fp-digest fp})
+        _ (http-post port "/v1/bootstrap"
+                     {:envelope wire :pubkey pubkey-b64 :alg "ed25519"})
+        v (build-verify-envelope
+           {:sk (:sk kp) :pk-bytes (:pk-bytes kp) :ts (iso8601-now)
+            :host-user-id "" :fp-digest fp :method "POST" :path "/v1/verify"})]
+    (http-post port "/v1/verify" {:envelope v})))
+
+(deftest verify-priority-weight-reflects-config
+  (testing "priority_weight in the verify response is sourced from
+            :priority-weights config, not the hardcoded defaults"
+    (let [weights {:anonymous 2.5 :tracked 7.0 :penalized 0.0 :banned 0.0}]
+      (with-running-system
+        {:priority-weights weights}
+        (fn [{:keys [port]}]
+          (let [r        (boot-and-verify! port)
+                tier-kw  (keyword (-> r :body :tier))]
+            (is (= 200 (:status r)) (str "body: " (:body r)))
+            (is (= (get weights tier-kw) (-> r :body :priority_weight))
+                (str "priority_weight must match configured weight for tier "
+                     (-> r :body :tier)))))))))
+
+(deftest verify-class-cap-throttles-across-identities
+  (testing "A class cap denies a second identity's verify once the shared
+            tier bucket is drained — each caller is within its own budget,
+            but the tier as a whole is capped — with :scope \"class\""
+    (with-running-system
+      ;; cap 1 req/min on :1m for every tier, so whatever tier the verifies
+      ;; land in, the second distinct caller hits the shared class bucket.
+      {:global-limits {:anonymous {:1m 1} :tracked {:1m 1}
+                       :penalized {:1m 1} :banned {:1m 1}}}
+      (fn [{:keys [port]}]
+        (let [r1 (boot-and-verify! port)
+              r2 (boot-and-verify! port)]
+          (is (= 200 (:status r1)) (str "first caller allowed: " (:body r1)))
+          (is (= 429 (:status r2)) (str "second caller class-throttled: " (:body r2)))
+          (is (= "E_RATE" (-> r2 :body :code)))
+          (is (= "class"  (-> r2 :body :scope))
+              "a class-cap denial must be tagged scope=class")
+          (is (number? (-> r2 :body :priority_weight))))))))
+
+(deftest verify-no-class-cap-by-default
+  (testing "With no :global-limits, distinct identities are not throttled
+            against each other — the class path stays inert (v0.2 behavior)"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [r1 (boot-and-verify! port)
+              r2 (boot-and-verify! port)]
+          (is (= 200 (:status r1)))
+          (is (= 200 (:status r2))
+              "no class cap configured ⇒ second caller is not class-throttled"))))))
 
 (deftest verification-flow-bootstrap-verify-rotate-revoke
   ;; Plan §Verification line: "full bootstrap + verify + rotate + revoke

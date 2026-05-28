@@ -29,11 +29,35 @@
  {:windows  [{:window :1m   :seconds 60}
              {:window :5m   :seconds 300}
              {:window :1d   :seconds 86400}]
+  ;; Per-caller token bucket per (tier, window). A cell is either a bare
+  ;; capacity (leak rate derived as capacity/window-seconds) or a map
+  ;; {:capacity N :leak-per-sec R} to set burst size and steady drain
+  ;; independently. Both forms may be mixed freely.
   :tiers
   {:anonymous  {:1m 1   :5m 5    :1d 100}
    :tracked    {:1m 30  :5m 120  :1d 5000}
    :penalized  {:1m 0   :5m 1    :1d 20}     ; 1 req per 5 minutes
-   :banned     {:1m 0   :5m 0    :1d 1}}}    ; 1 req per hour ≈ 24/day; tightened to 1
+   :banned     {:1m 0   :5m 0    :1d 1}}     ; 1 req per hour ≈ 24/day; tightened to 1
+
+  ;; Per-tier scheduling weight surfaced as :priority_weight in the verify
+  ;; response (advisory host-side input for weighted fair queuing; not
+  ;; enforced here). Defaults mirror the :1m capacity ratio.
+  :priority-weights
+  {:anonymous 1.0  :tracked 30.0  :penalized 0.0  :banned 0.0}
+
+  ;; OPTIONAL class-level back-pressure: a SHARED token bucket per
+  ;; (tier, window) that every caller of that tier draws from collectively,
+  ;; orthogonal to the per-caller buckets above. Bounds aggregate tier
+  ;; throughput so a flood of many distinct identities — each within its
+  ;; own per-caller budget — cannot collectively swamp the service. Same
+  ;; bare-or-map cell shape as :tiers. Empty ⇒ feature off (no class cap).
+  ;; Size each cap to your instance's headroom: capacity is per-window
+  ;; across ALL callers of the tier, so :1m N means "≤ N anonymous
+  ;; requests cluster-wide per minute." Only the windows you list are
+  ;; capped. Example (commented; tune to capacity then enable):
+  ;;   :class-caps {:anonymous {:1m 6000 :1d 2000000}
+  ;;                :penalized {:1m 200}}
+  :class-caps {}}
 
  ;; Per-IP exponential-backoff on /v1/bootstrap. See plan §"Time as a
  ;; resource" and docs/threat-model.md T14. Each allow sets up the next
