@@ -82,7 +82,7 @@ The verify response surfaces `:priority_weight`, a numeric proxy for tier that h
 
 ### Pure-where-possible, transactional-where-necessary
 
-Score deltas, tier projection, token-bucket arithmetic, envelope canonicalization are pure functions. Storage interaction is concentrated in two phases per request: read at the top, write asynchronously after the decision. This makes most of the system trivially testable without a real DB. Only the integration layer needs ephemeral Datalevin.
+Spaced-continuity scoring, tier projection, token-bucket arithmetic, envelope canonicalization are pure functions. Storage interaction is concentrated in two phases per request: read at the top, write asynchronously after the decision. This makes most of the system trivially testable without a real DB. Only the integration layer needs ephemeral Datalevin.
 
 ### Genericity through protocols
 
@@ -141,7 +141,7 @@ Decisions that shaped the architecture and shouldn't be re-litigated without rea
 
 - **Read-then-write token-bucket overshoot.** Concurrent verifies for the same bucket read the same snapshot, so under flood a bucket can briefly serve slightly more than capacity before the writes settle. Bounded and acceptable for opportunistic-abuse defense; the class-cap bucket inherits the same property. Documented in `ratelimit/window.clj`. CAS/token-leasing is noted as future hardening.
 - **5-second event-loss window** on app crash (async transact). Documented in `risk-register #7` in the plan.
-- **Anonymous tier is intentionally low value.** Bootstrap is cheap, sybil gains nothing. Tier uplift requires sustained observation or host-link.
+- **Anonymous tier is intentionally low value.** Bootstrap is cheap, sybil gains nothing. Tier uplift requires sustained observation or host-link. Trust is a **spaced-continuity memory weight** (ontology §6), not a per-verify accumulator: it rewards *spaced* recurrence (a key seen long ago and again recently) over *massed* frequency (many hits in a burst). This is the structural anti-farming property — volume is cheap to manufacture, calendar time and spacing are not. The score is derived at read time from an O(1) per-identity sketch; a fresh clean key lands at the floor (`:anonymous`) and `:banned` is reached only through the violation term.
 - **Client lib bundle ≤ 40 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is 31.79 KB. Future fingerprint signals can blow this. We will favor signal removal over budget increase.
 
 ## CI posture

@@ -52,7 +52,7 @@
   deps: {:store, :clock, :tolerance-seconds, :nonce-ttl-seconds,
          :registry — Prometheus registry (or nil if metrics disabled),
          :windows  — a coll of {:window kw :seconds long}
-         :scoring  — score deltas map
+         :scoring  — spaced-continuity weight constants (or nil for default)
          :tier-thresholds — tier projection thresholds (or nil for default)
          :tier-limits     — per-tier per-window limit cells (or nil for default)
          :global-limits   — per-tier class caps {tier {window cell}} (or nil = off)
@@ -60,7 +60,7 @@
   [{:keys [store clock tolerance-seconds nonce-ttl-seconds registry
             windows scoring tier-thresholds tier-limits global-limits
             priority-weights]
-    :or {scoring          score/default-deltas
+    :or {scoring          score/default-scoring
          tier-thresholds  tier/default-thresholds
          tier-limits      tier/default-limits
          priority-weights tier/default-priority-weights}}]
@@ -94,11 +94,20 @@
 
         (let [identity (storage/pull store snap identity-eid
                                       [:identity/score
-                                       :identity/ever-tracked?])
-              score-before (or (:identity/score identity) score/score-neutral)
+                                       :identity/ever-tracked?
+                                       :identity/created-at
+                                       :identity/last-clean-at
+                                       :identity/clean-count
+                                       :identity/spacing
+                                       :identity/violation-count])
+              now-ms       (.getTime ^java.util.Date now)
+              sketch       (merge/identity->sketch identity now-ms)
+              ;; Trust is a spaced-continuity weight recomputed at read
+              ;; time from the sketch, not the stored accumulator.
+              score-now    (score/score-of sketch now-ms scoring)
               hl?          (host-linked? store snap identity-eid)
               tier-now     (tier/project
-                            {:score         score-before
+                            {:score         score-now
                              :host-linked?  hl?
                              :ever-tracked? (boolean (:identity/ever-tracked? identity))}
                             tier-thresholds)
@@ -112,12 +121,19 @@
                             tier-now
                             (or priority-weights tier/default-priority-weights))]
           (if (:allowed? window-decs)
-            (let [tx (merge/classification-tx
-                      classification incoming score-before scoring now)]
-              ;; SYNC transact for score + request event. Async would let
+            (let [base-tx (merge/classification-tx
+                           classification incoming sketch scoring now)
+                  ;; First time we SERVE this identity as :tracked, latch
+                  ;; ever-tracked? so later idle-decay can route it to
+                  ;; :penalized rather than back to :anonymous.
+                  tx      (cond-> base-tx
+                            (and (= :tracked tier-now)
+                                 (not (:identity/ever-tracked? identity)))
+                            (conj [:db/add identity-eid :identity/ever-tracked? true]))]
+              ;; SYNC transact for sketch + request event. Async would let
               ;; two concurrent verifies for the same identity each read
-              ;; the same `score-before` and write the same `score-after`,
-              ;; flattening penalties to one-per-burst. Latency cost is
+              ;; the same sketch and write the same updated sketch,
+              ;; flattening reinforcement to one-per-burst. Latency cost is
               ;; <1 ms in practice; correctness wins.
               (storage/transact! store tx)
               (metrics/record-verify! registry :ok tier-now

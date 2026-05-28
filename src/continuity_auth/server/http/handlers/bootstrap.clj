@@ -26,6 +26,7 @@
    [continuity-auth.server.http.errors :as errors]
    [continuity-auth.server.http.util :as util]
    [continuity-auth.server.identity.merge :as merge]
+   [continuity-auth.server.identity.score :as score]
    [continuity-auth.server.observability.metrics :as metrics]
    [continuity-auth.server.storage.protocol :as storage]))
 
@@ -37,8 +38,10 @@
   deps: {:store        Storage
          :clock        (fn [] java.util.Date)
          :tolerance-seconds long
-         :nonce-ttl-seconds long}"
-  [{:keys [store clock tolerance-seconds nonce-ttl-seconds registry]}]
+         :nonce-ttl-seconds long
+         :scoring           spaced-continuity weight constants (or nil)}"
+  [{:keys [store clock tolerance-seconds nonce-ttl-seconds registry scoring]
+    :or   {scoring score/default-scoring}}]
   (fn [request]
     (let [{:keys [envelope pubkey-bytes alg]}
           (util/parse-pubkey-payload (:body-params request) {})
@@ -65,7 +68,7 @@
           ip  (:cauth/client-ip request)
           fp  (:fp-digest envelope)
           tx  (merge/bootstrap-tx
-               {:ip ip :fp-digest fp} pubkey now)
+               {:ip ip :fp-digest fp} pubkey now scoring)
           _   (storage/transact! store tx)
           ;; Lookup the new identity to return its UUID.
           snap2 (storage/snapshot store)

@@ -36,6 +36,22 @@
     (number? x)                  (java.util.Date. (long x))
     :else                        (java.util.Date.)))
 
+(defn identity->sketch
+  "Extract the spaced-continuity sketch (epoch-ms fields, the shape
+  `score/score-of` consumes) from a pulled identity map. Missing fields
+  (a pre-v5 identity, or one only just bootstrapped) default to a
+  fresh-key sketch anchored at `now-ms`: clean-count 0 → score floor →
+  :anonymous, so an unmigrated identity simply re-earns trust from the
+  safe default."
+  [identity ^long now-ms]
+  {:clean-count      (long (or (:identity/clean-count identity) 0))
+   :spacing          (double (or (:identity/spacing identity) 0.0))
+   :violation-count  (long (or (:identity/violation-count identity) 0))
+   :created-at-ms    (if-let [^java.util.Date d (:identity/created-at identity)]
+                       (.getTime d) now-ms)
+   :last-clean-at-ms (if-let [^java.util.Date d (:identity/last-clean-at identity)]
+                       (.getTime d) now-ms)})
+
 ;; -- bootstrap path --------------------------------------------------------
 
 (defn bootstrap-tx
@@ -47,28 +63,39 @@
                      :alg   :ed25519 | :p256
                      :id    <thumbprint-bytes>}
     now           — java.util.Date
+    scoring       — spaced-continuity weight constants (`score/default-scoring`)
 
   Returns a vector of tx maps that:
-    - creates a new identity (tempid -1)
+    - creates a new identity (tempid -1) with a fresh trust sketch
+      (clean-count 1, spacing 0.0, violation-count 0, created-at =
+      last-clean-at = now)
     - creates the new pubkey (tempid -2) bound to that identity
     - creates the first tuple (tempid -3)
     - emits a :bootstrap trust event
     - emits a :request event with outcome :ok
 
-  The caller is responsible for the consequent score/tier projection on
-  the read side; the trust event's `:trust-event/score-after` is
-  initialized to score-neutral so anonymous tier holds until further
-  observations modify the score."
-  [incoming pubkey now]
-  (let [iid (random-uuid)
-        tid (random-uuid)
-        d   (->date now)]
-    [{:db/id                   -1
-      :identity/id             iid
-      :identity/created-at     d
-      :identity/last-event-at  d
-      :identity/score          score/score-neutral
-      :identity/ever-tracked?  false}
+  The fresh sketch derives to the score floor (≈ :anonymous), so a
+  brand-new key — including a farmed sybil — starts unproven and must
+  earn trust through spaced clean recurrence. `:identity/score` is a
+  write-time cache; the verify path recomputes from the sketch."
+  [incoming pubkey now scoring]
+  (let [iid    (random-uuid)
+        tid    (random-uuid)
+        d      (->date now)
+        now-ms (.getTime d)
+        sketch {:clean-count 1 :spacing 0.0 :violation-count 0
+                :created-at-ms now-ms :last-clean-at-ms now-ms}
+        score0 (score/score-of sketch now-ms scoring)]
+    [{:db/id                    -1
+      :identity/id              iid
+      :identity/created-at      d
+      :identity/last-event-at   d
+      :identity/last-clean-at   d
+      :identity/clean-count     1
+      :identity/spacing         0.0
+      :identity/violation-count 0
+      :identity/score           score0
+      :identity/ever-tracked?   false}
      {:db/id                   -2
       :pubkey/id               (:id pubkey)
       :pubkey/identity         -1
@@ -88,7 +115,7 @@
       :trust-event/ts           d
       :trust-event/delta        0.0
       :trust-event/reason       :bootstrap
-      :trust-event/score-after  score/score-neutral}
+      :trust-event/score-after  score0}
      {:request/identity         -1
       :request/ts               d
       :request/outcome          :ok
@@ -245,26 +272,43 @@
     classification — output of `classify` (must NOT be :revoked-pubkey
                      or :orphan-pubkey; handler rejects those)
     incoming       — same as passed to classify
-    score-before   — the identity's current score before this event
-    deltas         — scoring deltas map (default `score/default-deltas`)
+    sketch         — the identity's current spaced-continuity sketch
+                     (epoch-ms fields, from `identity->sketch`)
+    scoring        — weight constants (`score/default-scoring`)
     now            — java.util.Date
 
+  Every verify on this path is a clean (pubkey-matched) continuity
+  signal: it reinforces the sketch (clean-count++, spacing += inter-
+  arrival credit, last-clean-at = now). A new-tuple with an axis mismatch
+  ALSO increments violation-count, which erodes the derived score via the
+  violation-rate term without erasing the continuity reinforcement.
+  `:trust-event/delta` is the change in derived score this event causes
+  (score-after − score-before, evaluated at `now`).
+
   Returns a vector of tx maps."
-  [classification incoming score-before deltas now]
+  [classification incoming sketch scoring now]
   (let [{:keys [kind identity-eid existing-tuple mismatch-axes
                 pubkey-eid]} classification
         d            (->date now)
+        now-ms       (.getTime d)
         reasons      (case kind
                        :exact-observation [:pubkey-match]
                        :new-tuple        (into [:pubkey-match]
                                                 (score/axis-mismatch->reasons
                                                  mismatch-axes)))
-        delta        (score/delta-for-reasons deltas reasons)
-        score-after  (score/apply-delta score-before delta)
+        violation?   (boolean (seq mismatch-axes))
+        sketch'      (score/sketch-update sketch now-ms violation? scoring)
+        score-before (score/score-of sketch now-ms scoring)
+        score-after  (score/score-of sketch' now-ms scoring)
+        delta        (- score-after score-before)
         match-axes   (match-axes-set classification)
-        common       [{:db/id                  identity-eid
-                       :identity/last-event-at d
-                       :identity/score         score-after}
+        common       [{:db/id                    identity-eid
+                       :identity/last-event-at    d
+                       :identity/last-clean-at    d
+                       :identity/clean-count      (:clean-count sketch')
+                       :identity/spacing          (:spacing sketch')
+                       :identity/violation-count  (:violation-count sketch')
+                       :identity/score            score-after}
                       {:trust-event/identity   identity-eid
                        :trust-event/ts         d
                        :trust-event/delta      delta

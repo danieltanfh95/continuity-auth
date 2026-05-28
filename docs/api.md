@@ -120,6 +120,23 @@ The numeric scale is advisory and non-normative. Hosts that want a different ord
 
 **Class-level back-pressure caps.** Per-caller buckets bound each identity but not the *aggregate*: many distinct identities, each within its own budget, can collectively swamp a tier. `:ratelimit/:class-caps` adds one shared bucket per `(tier, window)` that all callers of that tier draw from. A request must pass **both** its own per-caller bucket **and** its tier's class bucket; a denial at either gate consumes no tokens at the other (a caller isn't penalized for a class-level shed). Class caps are per-tier, per-window, with the same bare-number-or-map cell shape as `:tiers`. Only the `(tier, window)` pairs you list are capped; the feature is **off by default** (absent `:class-caps` ⇒ pure per-caller behavior, identical to v0.2). When a class cap fires, the 429 carries `scope: "class"`.
 
+**How a caller climbs tiers.** The `tier` is a projection of a trust
+score, and that score is a **spaced-continuity memory weight**, not a
+per-request accumulator. Trust rewards *spaced* recurrence — the same key
+returning over days and weeks — far more than *massed* frequency — many
+requests in a short burst. A brand-new key starts at the score floor
+(`anonymous`) no matter how it bootstraps; it earns `tracked` through
+sustained, low-anomaly observation over calendar time (or via a host-link).
+Idle trust decays with a ~30-day half-life, and axis mismatches / anomalies
+erode the score toward `banned` via a violation rate. The weight constants
+(`freq-cap`, `span-exponent`, `gap-min-days`, `decay-half-life-days`,
+`squash-scale`, `score-floor`, `violation-k`, …) live under `:scoring` in
+config; see [ontology §6](ontology.md) for the formula and
+[`config.edn`](../resources/config.edn) for the tunable defaults. The
+practical consequence for integrators: a respectful long-lived caller is
+afforded progressively higher limits, while a farm of throwaway keys gains
+almost nothing — spacing is expensive to fake at scale, volume is not.
+
 **Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN` (revoked key, banned tier), `E_REPLAY`, `E_RATE`.
 
 ### `POST /v1/rotate-key`

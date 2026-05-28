@@ -42,8 +42,20 @@
   Additive: Datalevin picks up the new attribute on open; old per-caller
   buckets lack it (sparse) and read as nil. Class buckets are keyed
   `\"tier:<tier>|<window>\"` and carry no `:bucket/identity`. No data
-  rewrite — the migration only stamps the version."
-  4)
+  rewrite — the migration only stamps the version.
+
+  v5 (2026-05-28): trust score becomes a derived spaced-continuity weight
+  rather than a stored accumulator. Adds the per-identity O(1) sketch the
+  weight is recomputed from at read time:
+  `:identity/clean-count` (long), `:identity/spacing` (double),
+  `:identity/violation-count` (long), `:identity/last-clean-at` (instant).
+  `:identity/score` is retained as a write-time cache for audit/metrics,
+  but the verify path now derives the score from the sketch (see
+  `continuity-auth.server.identity.score`). Additive: existing identities
+  read missing sketch fields as nil → a fresh-key sketch (clean-count 0)
+  → score floor → :anonymous, i.e. everyone re-earns trust from the safe
+  default. No data rewrite — the migration only stamps the version."
+  5)
 
 (def schema
   "Datalevin attribute schema, one entry per attribute. The schema is
@@ -66,11 +78,32 @@
    {:db/valueType :db.type/instant
     :db/index     true}
 
+   ;; Write-time cache of the derived trust score. The verify path
+   ;; recomputes the score from the sketch below at read time; this slot
+   ;; is for audit/metrics inspection, not the source of truth.
    :identity/score
    {:db/valueType :db.type/double}
 
    :identity/ever-tracked?
    {:db/valueType :db.type/boolean}
+
+   ;; -- trust sketch (spaced-continuity weight inputs, v5) ----------------
+   ;; The score is a memory weight recomputed at read time from this O(1)
+   ;; per-identity sketch (see `continuity-auth.server.identity.score`).
+   ;; `:identity/created-at` is the span anchor; `:identity/last-clean-at`
+   ;; anchors decay + gap detection.
+   :identity/clean-count
+   {:db/valueType :db.type/long}            ; pubkey-matched clean verifies
+
+   :identity/spacing
+   {:db/valueType :db.type/double}          ; Σ ln(1+gap_days) over spaced returns
+
+   :identity/violation-count
+   {:db/valueType :db.type/long}            ; axis-mismatch / anomaly observations
+
+   :identity/last-clean-at
+   {:db/valueType :db.type/instant
+    :db/index     true}                     ; last reinforcing verify
 
    :identity/erased-at
    {:db/valueType :db.type/instant

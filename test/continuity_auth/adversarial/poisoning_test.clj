@@ -54,7 +54,8 @@
         tx  (merge/bootstrap-tx
              {:ip ip :fp-digest fp}
              {:bytes pkb :alg :ed25519 :id pid}
-             (Date.))]
+             (Date.)
+             score/default-scoring)]
     (storage/transact! store tx)
     {:pid pid :ip ip :fp fp}))
 
@@ -159,12 +160,18 @@
           (is (= #{:ip} (:mismatch-axes result))
               "only IP mismatched; fp matches")
           ;; Validate the cluster gained a tuple (not lost continuity).
-          (let [tx (merge/classification-tx
+          (let [now    (Date.)
+                ident  (storage/pull store snap0 (:identity-eid result)
+                                     [:identity/clean-count :identity/spacing
+                                      :identity/violation-count :identity/created-at
+                                      :identity/last-clean-at])
+                sketch (merge/identity->sketch ident (.getTime now))
+                tx (merge/classification-tx
                     result
                     {:ip "172.16.0.1" :fp-digest (:fp user)}
-                    0.5
-                    score/default-deltas
-                    (Date.))]
+                    sketch
+                    score/default-scoring
+                    now)]
             (storage/transact! store tx)
             (let [snap1 (storage/snapshot store)
                   iid   (identity-of-pubkey store snap1 (:pid user))

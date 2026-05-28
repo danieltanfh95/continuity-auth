@@ -109,21 +109,62 @@ class bucket. The class cap is back-pressure: it bounds aggregate tier
 throughput regardless of how many distinct identities appear, so a flood
 of well-behaved-individually callers cannot collectively swamp the service.
 
-Score deltas:
+The score is **not** a running sum of per-verify deltas. It is a
+*spaced-continuity memory weight* recomputed at read time from a small
+O(1) per-identity sketch, in the spirit of the spacing effect: a key seen
+long ago and again recently is more load-bearing than one seen frequently
+in a short burst. Spaced recurrence dominates raw frequency, which makes
+earned trust expensive to farm — volume can be manufactured cheaply, but
+calendar time and spacing cannot.
+
+The sketch (updated O(1) on each verify, see §1 `Identity`):
 
 ```
-+0.05    pubkey-match within cluster (a verified signature against a known pubkey)
-+0.30    HostLink committed (after cooling-off)
--0.02    IP mismatch within cluster
--0.05    fp-digest mismatch within cluster
--0.10    Both ip+fp mismatch within cluster (new tuple, pubkey-only match)
--0.05    Behavioral anomaly (regular-interval signaling, high concurrency)
-+ decay  Toward 0.5 at 0.01/day with no activity
+:identity/clean-count       long    pubkey-matched verifies (continuity signal)
+:identity/spacing           double  Σ ln(1+gap_days) over returns after a dormant gap
+:identity/created-at        instant first-seen (span anchor)
+:identity/last-clean-at     instant last reinforcing verify (decay + gap detection)
+:identity/violation-count   long    axis-mismatch / anomaly observations
 ```
 
-Each delta is recorded as a `TrustEvent` for audit.
+The score is derived from the sketch at `now`:
 
-**The score is the only attribute that changes asynchronously.** All other identity attributes are either created-and-immutable or updated synchronously with bookkeeping.
+```
+freq   = min(√clean-count, freq-cap)          ; freq-cap 4.0 (volume saturates fast)
+span   = (1 + ln(1 + span-days))^span-exp      ; span-exp 1.5 (calendar longevity)
+gap    = 1 + spacing                            ; spaced returns accumulate here
+within = (span-days < span-min) ? 0.5 : 1.0     ; penalize single-burst cram only
+decay  = 0.5 ^ (idle-days / half-life)          ; half-life 30d, idle = now − last-clean
+base   = freq · span · gap · within · decay
+earned = 1 − 2^(−base / squash-scale)           ; squash-scale 60.0 → [0,1)
+vrate  = violation-count / (violation-count + clean-count)
+score  = clamp01( (floor + (1−floor)·earned) · (1 − violation-k·vrate) )   ; floor 0.1
+```
+
+Constants live in config `:scoring` (see [`config.edn`](../resources/config.edn))
+and `score/default-scoring`. Consequences of this shape:
+
+- A **fresh clean key** (clean-count 1, no span, no spacing) derives ≈ 0.105
+  — the score floor, in the `:anonymous` band. Bootstrap is cheap and a
+  brand-new key (including a farmed sybil) is *unproven*, never `:tracked`
+  on arrival.
+- **Bot-cram** (thousands of massed hits in an hour) stays `:anonymous`:
+  frequency saturates at the √-cap, and with no span and no spacing the
+  weight barely lifts off the floor.
+- **`:banned` is reached through the violation term**, not absence of
+  history. Low *earned* trust means "unproven" (`:anonymous`), not "bad".
+  A high violation rate (axis mismatches / anomalies) erodes the score
+  toward 0 regardless of how much continuity was accrued.
+- A new tuple with an axis mismatch (a roaming user on a new IP) still
+  *reinforces* continuity (clean-count++) while recording a violation — a
+  single relocation barely dents the score; persistent mismatching erodes
+  it via `vrate`.
+
+Each verify records a `TrustEvent` (`:trust-event/delta` = the change in
+derived score this event caused) for audit. `:identity/score` is retained
+as a write-time cache for audit/metrics; the verify path always recomputes
+from the sketch. The sketch fields are updated synchronously in the same
+transaction as the request event.
 
 ## 7. Tuple membership rule (merge)
 
@@ -186,7 +227,8 @@ This is structurally identical to pdsa's "challenge-response with a client-deriv
 |---|---|---|
 | I1 | A pubkey thumbprint maps to exactly one identity. | `:pubkey/id` is `:db.unique/identity`; mass-merge logic in §8 re-points pubkeys before retracting. |
 | I2 | A tuple maps to exactly one identity. | `:tuple/identity` ref; transaction logic. |
-| I3 | An identity's score is always in `[0.0, 1.0]`. | Score-mutation transaction-fn clamps. |
+| I3 | An identity's derived score is always in `[0.0, 1.0]`. | `score/score-of` clamps; the score is recomputed from the sketch at read time. |
+| I12 | A fresh clean key projects to `:anonymous`, never `:tracked`; `:banned`/`:penalized` are reached only via the violation term, not absence of history. | `score/score-of` floors a no-violation key at `:score-floor` (≈ 0.105 < tracked threshold); the `(1 − violation-k·vrate)` factor is the only path below the floor. |
 | I4 | A nonce hash is unique in the DB while live. | `:nonce/hash` is `:db.unique/identity`. |
 | I5 | A tuple cannot be created with a pubkey-ref whose `:pubkey/revoked-at` is set. | Verify step rejects revoked-key envelopes upstream of tuple creation. |
 | I6 | Two distinct identities never share a pubkey thumbprint. | I1; merge logic in §8. |
@@ -214,7 +256,7 @@ The above is the v1 implementation. The system is generic in three dimensions, e
 | Protocol | What it generalizes | v1 implementations |
 |---|---|---|
 | `Axis` | A component of the trust vector | `IPAxis`, `FpDigestAxis`, `LSPubkeyAxis`, `HostUserIdAxis` |
-| `TrustPolicy` | Mapping `(identity, recent_events) → (score deltas, tier, limits)` | `DefaultPolicy` (the table in §6) |
+| `TrustPolicy` | Mapping `(identity sketch, now) → (derived score, tier, limits)` | `DefaultPolicy` (the spaced-continuity weight in §6) |
 | `Storage` | Persistence + indexed lookup | `DatalevinStorage` |
 
 A new axis is added by:

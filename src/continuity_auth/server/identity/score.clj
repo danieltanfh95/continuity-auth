@@ -1,38 +1,129 @@
 (ns continuity-auth.server.identity.score
-  "Pure score-delta calculus.
+  "Spaced-continuity trust weighting.
 
-  The trust score is a single number in [0.0, 1.0] per identity. Each
-  observation contributes a delta; the score is the clamped sum. Decay
-  is applied lazily (on read) by the tier projector — this namespace
-  only produces deltas for discrete events.
+  Trust is not a running sum of per-verify deltas; it is a *memory weight*
+  recomputed at read time from a small per-identity sketch, in the spirit of
+  the spacing effect (cf. `agent-lineage-evolution` succession
+  `domain/weight.clj`): a key seen long ago and again recently is more
+  load-bearing than one seen frequently in a short burst. Spaced recurrence
+  dominates raw frequency, which makes earned trust expensive to farm.
 
-  Defaults match the table in `docs/ontology.md` §6. They are
-  configurable at startup via the :scoring map in config.edn.")
+  The sketch (stored on the identity, updated O(1) per verify):
+    :clean-count       long    — pubkey-matched verifies (continuity signal)
+    :spacing           double  — Σ ln(1+gap_days) over returns after a dormant gap
+    :created-at-ms     long    — first-seen epoch ms (span anchor)
+    :last-clean-at-ms  long    — last reinforcing verify (decay + gap detection)
+    :violation-count   long    — axis-mismatch / anomaly observations
 
-(def default-deltas
-  "Default magnitudes for each kind of trust event. Negative magnitudes
-  reduce trust; positive magnitudes increase it."
-  {:pubkey-match           +0.05
-   :host-link-committed    +0.30
-   :ip-mismatch            -0.02
-   :fp-mismatch            -0.05
-   :all-mismatch           -0.10
-   :anomaly                -0.05
-   :erasure-requested       0.0
-   :admin-reset             0.0
-   :bootstrap               0.0
-   :decay                   0.0})    ; computed separately from decay-toward
+  Formula (constants in `default-scoring`, overridable via config `:scoring`):
+
+    freq   = min(√clean-count, freq-cap)
+    span   = (1 + ln(1 + span-days))^span-exponent
+    gap    = 1 + spacing
+    within = (span-days < span-min-days) ? within-burst-penalty : 1.0
+    decay  = 0.5 ^ (idle-days / decay-half-life-days)
+    base   = freq · span · gap · within · decay
+    earned = 1 − 2^(−base / squash-scale)
+    vrate  = violation-count / (violation-count + clean-count)
+    score  = clamp01( (floor + (1−floor)·earned) · (1 − violation-k·vrate) )
+
+  Banned/penalized are reached via the violation term, not absence of
+  history: a fresh, clean key lands at the score floor (≈ :anonymous), never
+  :banned.
+
+  `base-weight`, `score-of`, `spacing-credit` are pure. This namespace also
+  hosts the pure axis-classification used by the merge path
+  (`classify-axis-match`, `axes-vs-cluster`, `axis-mismatch->reasons`).")
 
 (def ^:const score-min 0.0)
 (def ^:const score-max 1.0)
-(def ^:const score-neutral 0.5)
-(def ^:const default-decay-toward score-neutral)
-(def ^:const default-decay-rate-per-day 0.01)
+
+(def default-scoring
+  "Calibrated weight constants. See `.plans/spaced-continuity-trust-model.md`
+  §Calibration record for the scenario table these were tuned against."
+  {:freq-cap             4.0     ; raw volume saturates fast (anti-farming)
+   :span-exponent        1.5     ; calendar-longevity curve
+   :within-burst-penalty 0.5     ; halve a single-burst (cram) identity
+   :span-min-days        1.0     ; below this span, treat as a burst
+   :gap-min-days         0.25    ; 6h: shorter gaps accrue no spacing
+   :decay-half-life-days 30.0    ; idle trust halves in a month
+   :squash-scale         60.0    ; weight→[0,1] squash scale (W0)
+   :score-floor          0.1     ; fresh clean key floor (anonymous band)
+   :violation-k          1.0})   ; violation-rate erosion strength
 
 (defn clamp
   "Clamp `score` to [score-min, score-max]."
   ^double [score]
   (-> score double (max score-min) (min score-max)))
+
+(defn- ms->days ^double [^long ms]
+  (/ (double ms) 86400000.0))
+
+(defn spacing-credit
+  "Increment to `:spacing` for a clean verify arriving `now-ms` after the
+  prior clean verify at `last-clean-ms`. Returns 0.0 when the gap is at or
+  below `:gap-min-days` (rapid-fire requests accrue no spacing)."
+  ^double [^long last-clean-ms ^long now-ms cfg]
+  (let [gap-days (ms->days (- now-ms last-clean-ms))]
+    (if (> gap-days (double (:gap-min-days cfg)))
+      (Math/log (+ 1.0 gap-days))
+      0.0)))
+
+(defn base-weight
+  "Pure spacing-effect base weight (pre-squash) from the identity sketch at
+  `now-ms`. Higher = more trusted."
+  ^double [{:keys [clean-count spacing created-at-ms last-clean-at-ms]} ^long now-ms cfg]
+  (let [n         (double (or clean-count 0))
+        sp        (double (or spacing 0.0))
+        freq      (Math/min (Math/sqrt n) (double (:freq-cap cfg)))
+        span-days (Math/max 0.0 (ms->days (- now-ms (long (or created-at-ms now-ms)))))
+        span-term (Math/pow (+ 1.0 (Math/log (+ 1.0 span-days)))
+                            (double (:span-exponent cfg)))
+        gap-term  (+ 1.0 sp)
+        within    (if (< span-days (double (:span-min-days cfg)))
+                    (double (:within-burst-penalty cfg))
+                    1.0)
+        idle-days (Math/max 0.0 (ms->days (- now-ms (long (or last-clean-at-ms now-ms)))))
+        decay     (Math/pow 0.5 (/ idle-days (double (:decay-half-life-days cfg))))]
+    (* freq span-term gap-term within decay)))
+
+(defn score-of
+  "Derived trust score in [0.0, 1.0] from the identity sketch at `now-ms`.
+  Consumed by the tier projector."
+  ^double [{:keys [clean-count violation-count] :as sketch} ^long now-ms cfg]
+  (let [b      (base-weight sketch now-ms cfg)
+        w0     (double (:squash-scale cfg))
+        floor  (double (:score-floor cfg))
+        earned (- 1.0 (Math/pow 2.0 (- (/ b w0))))
+        n      (double (or clean-count 0))
+        v      (double (or violation-count 0))
+        denom  (+ n v)
+        vrate  (if (pos? denom) (/ v denom) 0.0)
+        s      (* (+ floor (* (- 1.0 floor) earned))
+                  (- 1.0 (* (double (:violation-k cfg)) vrate)))]
+    (clamp s)))
+
+(defn sketch-update
+  "Apply one clean (pubkey-matched) verify at `now-ms` to the identity
+  sketch, O(1). `violation?` is true when the event also carries an
+  axis mismatch (ip/fp), which feeds the violation-rate erosion term but
+  does NOT stop the verify from reinforcing continuity. Returns the
+  updated sketch (epoch-ms fields); `:created-at-ms` is left untouched.
+
+    clean-count       += 1
+    spacing           += spacing-credit(last-clean-at, now)   ; 0 if gap ≤ gap-min
+    last-clean-at-ms  =  now-ms
+    violation-count   += (violation? 1 0)
+
+  Pure: the caller transacts the resulting fields."
+  [{:keys [clean-count spacing last-clean-at-ms violation-count] :as sketch}
+   ^long now-ms violation? cfg]
+  (let [credit (spacing-credit (long (or last-clean-at-ms now-ms)) now-ms cfg)]
+    (assoc sketch
+           :clean-count      (inc (long (or clean-count 0)))
+           :spacing          (+ (double (or spacing 0.0)) credit)
+           :last-clean-at-ms now-ms
+           :violation-count  (+ (long (or violation-count 0)) (if violation? 1 0)))))
 
 (defn axis-mismatch->reasons
   "Map a set of mismatched-axis keywords to a sequence of trust-event
@@ -46,33 +137,6 @@
       (= axes #{:fp})               [:fp-mismatch]
       (= axes #{:ip :fp})           [:all-mismatch]
       :else                         (mapv #(keyword (str (name %) "-mismatch")) axes))))
-
-(defn delta-for-reasons
-  "Sum of deltas for the given trust-event reasons under `deltas`."
-  ^double [deltas reasons]
-  (double (reduce + 0.0 (map #(get deltas % 0.0) reasons))))
-
-(defn apply-delta
-  "Apply `delta` to `current-score`, clamped."
-  ^double [current-score delta]
-  (clamp (+ (double current-score) (double delta))))
-
-(defn decay
-  "Lazily compute the decay-adjusted score given `current-score`,
-  `seconds-since-last-event`, and decay parameters. Decay drifts the
-  score toward `decay-toward` at `rate-per-day`. Returns the decayed
-  score, clamped."
-  ^double [current-score seconds-since-last-event
-           {:keys [decay-toward decay-rate-per-day]
-            :or {decay-toward       default-decay-toward
-                 decay-rate-per-day default-decay-rate-per-day}}]
-  (let [days        (/ (double seconds-since-last-event) 86400.0)
-        max-step    (* days (double decay-rate-per-day))
-        gap         (- (double decay-toward) (double current-score))
-        step        (if (>= (Math/abs gap) max-step)
-                      (* (Math/signum gap) max-step)
-                      gap)]
-    (clamp (+ (double current-score) step))))
 
 (defn classify-axis-match
   "Classify the relationship between an incoming tuple and the closest

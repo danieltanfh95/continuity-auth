@@ -249,3 +249,42 @@
               (protocol/close storage))))
         (finally
           (delete-recursively dir))))))
+
+(deftest v4-to-v5-migration-adds-trust-sketch
+  (testing "v4→v5 is additive: stamps version 5, no data rewrite, and the
+            new spaced-continuity sketch attrs become writable."
+    (let [dir  (temp-dir)
+          path (.toString dir)]
+      (try
+        ;; Seed a v4 store: legacy v2 fixture, then migrate up through v4.
+        (seed-v2-store! path ["203.0.113.9"])
+        (let [storage (dtlv/open path)]
+          (try
+            (runner/migrate! storage {:ip-hmac-key fixed-key} 4)
+            (let [result (runner/migrate! storage {} 5)]
+              (is (= :upgraded result))
+              (testing "schema-version is now 5"
+                (let [v (->> (protocol/q storage (protocol/snapshot storage)
+                                         '[:find [?v ...]
+                                           :where [_ :schema/version ?v]] [])
+                             sort last)]
+                  (is (= 5 v))))
+              (testing "an identity with the trust sketch writes cleanly"
+                (protocol/transact! storage
+                                    [{:identity/id              (random-uuid)
+                                      :identity/clean-count     7
+                                      :identity/spacing         4.2
+                                      :identity/violation-count 1
+                                      :identity/last-clean-at   (java.util.Date.)
+                                      :identity/score           0.6}])
+                (let [clean (->> (protocol/q storage (protocol/snapshot storage)
+                                             '[:find [?c ...]
+                                               :where [?i :identity/clean-count ?c]] [])
+                                 first)]
+                  (is (= 7 clean))))
+              (testing "re-running v4→v5 is idempotent (:ok)"
+                (is (= :ok (runner/migrate! storage {} 5)))))
+            (finally
+              (protocol/close storage))))
+        (finally
+          (delete-recursively dir))))))

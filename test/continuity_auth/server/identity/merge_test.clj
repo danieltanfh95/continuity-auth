@@ -42,7 +42,8 @@
   (let [tx (merge/bootstrap-tx
             {:ip ip :fp-digest fp}
             {:bytes pubkey-bytes :alg :ed25519 :id pubkey-id}
-            (Date.))
+            (Date.)
+            score/default-scoring)
         report (storage/transact! store tx)
         snap (storage/snapshot store)
         pk   (storage/find-pubkey-by-thumbprint store snap pubkey-id)]
@@ -213,24 +214,42 @@
 
 ;; -- classification-tx semantics ------------------------------------------
 
-(deftest classification-tx-exact-observation-reinforces-score
-  (let [classification {:kind            :exact-observation
-                        :identity-eid    1
-                        :existing-tuple  {:db/id 100
-                                           :tuple/observation-count 3}
-                        :mismatch-axes   #{}
-                        :cross-cluster   {:ip false :fp false}}
-        tx (merge/classification-tx classification
-                                     {:ip "1.1.1.1" :fp-digest (byte-array 32)}
-                                     0.5 score/default-deltas (Date.))
-        identity-update (first (filter #(= 1 (:db/id %)) tx))
-        trust-event     (first (filter :trust-event/identity tx))]
-    (is (> (:identity/score identity-update) 0.5)
-        "exact observation reinforces score")
-    (is (= :pubkey-match (:trust-event/reason trust-event)))))
+;; A sketch for an established key: 10 clean verifies, two weeks old, last
+;; seen two days ago, no prior violations. `now` is two days after the last
+;; clean verify so the spaced gap accrues credit.
+(def ^:private now-ms (System/currentTimeMillis))
+(def ^:private established-sketch
+  {:clean-count      10
+   :spacing          5.0
+   :violation-count  0
+   :created-at-ms    (- now-ms (* 14 86400000))
+   :last-clean-at-ms (- now-ms (*  2 86400000))})
+(def ^:private now-date (java.util.Date. now-ms))
 
-(deftest classification-tx-new-tuple-ip-only-net-positive
-  (testing "pubkey-match (+0.05) dominates single-axis IP-mismatch (-0.02) — net positive"
+(deftest classification-tx-exact-observation-reinforces-sketch
+  (testing "an exact observation increments clean-count, accrues spacing, raises score"
+    (let [classification {:kind            :exact-observation
+                          :identity-eid    1
+                          :existing-tuple  {:db/id 100
+                                             :tuple/observation-count 3}
+                          :mismatch-axes   #{}
+                          :cross-cluster   {:ip false :fp false}}
+          tx (merge/classification-tx classification
+                                       {:ip "1.1.1.1" :fp-digest (byte-array 32)}
+                                       established-sketch score/default-scoring now-date)
+          identity-update (first (filter #(= 1 (:db/id %)) tx))
+          trust-event     (first (filter :trust-event/identity tx))
+          score-before    (score/score-of established-sketch now-ms score/default-scoring)]
+      (is (= 11 (:identity/clean-count identity-update)) "clean-count++")
+      (is (> (:identity/spacing identity-update) 5.0) "spacing accrues the 2-day gap")
+      (is (= 0 (:identity/violation-count identity-update)) "no violation on an exact match")
+      (is (>= (:identity/score identity-update) score-before)
+          "spaced reinforcement never lowers the score")
+      (is (>= (:trust-event/delta trust-event) 0.0))
+      (is (= :pubkey-match (:trust-event/reason trust-event))))))
+
+(deftest classification-tx-new-tuple-ip-mismatch-reinforces-and-flags
+  (testing "a single-axis IP-mismatch still reinforces continuity AND records a violation"
     (let [classification {:kind          :new-tuple
                           :identity-eid  42
                           :existing-tuple nil
@@ -239,17 +258,19 @@
                           :pubkey-eid     7}
           tx (merge/classification-tx classification
                                        {:ip "1.1.1.1" :fp-digest (byte-array 32)}
-                                       0.5 score/default-deltas (Date.))
+                                       established-sketch score/default-scoring now-date)
           tuple-create (first (filter :tuple/id tx))
           identity-update (first (filter #(= 42 (:db/id %)) tx))]
       (is (some? tuple-create))
       (is (= 42 (:tuple/identity tuple-create)))
       (is (= 7  (:tuple/pubkey tuple-create)))
-      (is (> (:identity/score identity-update) 0.5)
-          "single-axis IP-mismatch with pubkey-match is still net positive (legit roaming user)"))))
+      (is (= 11 (:identity/clean-count identity-update))
+          "a roaming user (new IP, same key) still reinforces the cluster")
+      (is (= 1 (:identity/violation-count identity-update))
+          "the axis mismatch is recorded as a violation"))))
 
-(deftest classification-tx-new-tuple-all-mismatch-net-negative
-  (testing "All-axis mismatch (-0.10) overcomes pubkey-match (+0.05) — net negative"
+(deftest classification-tx-new-tuple-all-mismatch-erodes-vs-clean
+  (testing "all-axis mismatch records a violation that strictly lowers score vs the clean counterfactual"
     (let [classification {:kind          :new-tuple
                           :identity-eid  42
                           :existing-tuple nil
@@ -258,10 +279,15 @@
                           :pubkey-eid     7}
           tx (merge/classification-tx classification
                                        {:ip "1.1.1.1" :fp-digest (byte-array 32)}
-                                       0.5 score/default-deltas (Date.))
-          identity-update (first (filter #(= 42 (:db/id %)) tx))]
-      (is (< (:identity/score identity-update) 0.5)
-          "complete axis change penalizes — suggests possible compromise"))))
+                                       established-sketch score/default-scoring now-date)
+          identity-update (first (filter #(= 42 (:db/id %)) tx))
+          ;; counterfactual: same sketch update but treated as clean (no violation)
+          clean-after (score/score-of
+                       (score/sketch-update established-sketch now-ms false score/default-scoring)
+                       now-ms score/default-scoring)]
+      (is (= 1 (:identity/violation-count identity-update)))
+      (is (< (:identity/score identity-update) clean-after)
+          "the violation term erodes the score below the clean-path score"))))
 
 ;; -- properties -----------------------------------------------------------
 
@@ -294,16 +320,19 @@
                                               {:ip ip :fp-digest fp} pubkey
                                               (Date.))]
                   (when (#{:exact-observation :new-tuple} (:kind result))
-                    (let [ident (storage/pull
+                    (let [now   (Date.)
+                          ident (storage/pull
                                   store snap (:identity-eid result)
-                                  [:identity/score])
-                          score-before (:identity/score ident)
+                                  [:identity/clean-count :identity/spacing
+                                   :identity/violation-count :identity/created-at
+                                   :identity/last-clean-at])
+                          sketch (merge/identity->sketch ident (.getTime now))
                           tx (merge/classification-tx
                                result
                                {:ip ip :fp-digest fp}
-                               score-before
-                               score/default-deltas
-                               (Date.))]
+                               sketch
+                               score/default-scoring
+                               now)]
                       (storage/transact! store tx)))))
               (let [snap (storage/snapshot store)
                     scores (storage/q store snap

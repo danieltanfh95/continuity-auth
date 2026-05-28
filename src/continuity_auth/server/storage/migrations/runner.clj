@@ -86,7 +86,18 @@
    ;; lack it (sparse, read as nil) and the algorithm tolerates that.
    ;; Additive — no data rewrite; this only stamps the version.
    [3 4 (fn install-v4 [storage _ctx]
-          (protocol/transact! storage [{:schema/version 4}]))]])
+          (protocol/transact! storage [{:schema/version 4}]))]
+
+   ;; -- v4 → v5: add the trust sketch (spaced-continuity weight) -------
+   ;; New attrs `:identity/clean-count` `:identity/spacing`
+   ;; `:identity/violation-count` `:identity/last-clean-at` are declared
+   ;; in the schema map; Datalevin's schema-on-open picks them up.
+   ;; Existing identities lack them (sparse, read as nil) → the score fn
+   ;; treats them as a fresh-key sketch (clean-count 0) → score floor →
+   ;; :anonymous, so everyone re-earns trust from the safe default.
+   ;; Additive — no data rewrite; this only stamps the version.
+   [4 5 (fn install-v5 [storage _ctx]
+          (protocol/transact! storage [{:schema/version 5}]))]])
 
 (defn- migrations-from [from-version target-version]
   (->> migrations

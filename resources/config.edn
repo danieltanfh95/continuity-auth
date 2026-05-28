@@ -83,19 +83,34 @@
   ;; IPs in this list get ×5 on the suspicion multiplier.
   :datacenter-cidrs      #or [#env CONTINUITY_AUTH_BOOT_DC_CIDRS ""]}
 
+ ;; Spaced-continuity trust weighting. Trust is NOT a running sum of
+ ;; per-verify deltas; it is a memory weight recomputed at read time from a
+ ;; small per-identity sketch (clean-count, spacing, span, decay, violation
+ ;; rate). Spaced recurrence (a key seen long ago and again recently) is
+ ;; worth more than massed recurrence (frequent, clustered), which makes
+ ;; earned trust expensive to farm. See
+ ;; `.plans/spaced-continuity-trust-model.md` (§Calibration) and
+ ;; `continuity-auth.server.identity.score`.
+ ;;
+ ;;   freq   = min(√clean-count, freq-cap)
+ ;;   span   = (1 + ln(1 + span-days))^span-exponent
+ ;;   gap    = 1 + spacing                         ; spacing = Σ ln(1+gap_days)
+ ;;   within = (span-days < span-min-days) ? within-burst-penalty : 1.0
+ ;;   decay  = 0.5 ^ (idle-days / decay-half-life-days)
+ ;;   base   = freq · span · gap · within · decay
+ ;;   earned = 1 − 2^(−base / squash-scale)
+ ;;   vrate  = violation-count / (violation-count + clean-count)
+ ;;   score  = clamp01( (score-floor + (1−score-floor)·earned)·(1 − violation-k·vrate) )
  :scoring
- {:pubkey-match             0.05
-  :host-link                0.30
-  :ip-mismatch             -0.02
-  :fp-mismatch             -0.05
-  :all-mismatch            -0.10
-  :anomaly                 -0.05
-  :decay-per-day-toward-mid 0.01
-  :tier-thresholds
-  {:tracked    0.3
-   :tracked-host-linked 0.5
-   :penalized  0.3
-   :banned     0.05}}
+ {:freq-cap             4.0     ; raw volume saturates fast (anti-farming)
+  :span-exponent        1.5     ; calendar-longevity curve
+  :within-burst-penalty 0.5     ; halve a single-burst (cram) identity
+  :span-min-days        1.0     ; below this span, treat as a burst
+  :gap-min-days         0.25    ; 6h: shorter gaps accrue no spacing
+  :decay-half-life-days 30.0    ; idle trust halves in a month
+  :squash-scale         60.0    ; weight→[0,1] squash scale (W0)
+  :score-floor          0.1     ; fresh clean key floor (anonymous band)
+  :violation-k          1.0}    ; violation-rate erosion strength
 
  :trusted-proxies
  {;; Allowlist of trusted upstream CIDRs that we accept :ip-header from.
