@@ -17,7 +17,8 @@
    [continuity-auth.server.storage.protocol :as protocol]
    [continuity-auth.server.storage.schema :as schema])
   (:import
-   (java.util.concurrent CompletableFuture)))
+   (java.util.concurrent CompletableFuture ConcurrentHashMap TimeUnit)
+   (java.util.function BiConsumer)))
 
 (defn- conn-opts
   "Open options passed to Datalevin. Validation is handled upstream."
@@ -53,7 +54,7 @@
                   db value)]
     (mapv #(d/pull db tuple-pull-attrs %) eids)))
 
-(defrecord DatalevinStorage [conn]
+(defrecord DatalevinStorage [conn pending]
   protocol/Storage
 
   (snapshot [_]
@@ -141,14 +142,20 @@
     (d/transact! conn tx-data))
 
   (transact-async! [_ tx-data]
-    ;; Datalevin's `transact-async` returns a value compatible with deref;
-    ;; we wrap to a CompletableFuture for uniform use with java.util.concurrent.
+    ;; `d/transact-async` submits to a process-global async executor. If
+    ;; `conn` is closed while a submitted write is still in flight, the
+    ;; executor's native LMDB write races env teardown (write-after-free ->
+    ;; SIGSEGV/deadlock). Track each future in `pending` so `close` can
+    ;; drain in-flight writes before tearing the connection down.
     (let [fut (CompletableFuture.)]
+      (.add pending fut)
+      (.whenComplete fut (reify BiConsumer
+                           (accept [_ _res _err] (.remove pending fut))))
       (try
-        (let [pending (d/transact-async conn tx-data)]
+        (let [dl-result (d/transact-async conn tx-data)]
           (future
             (try
-              (.complete fut @pending)
+              (.complete fut @dl-result)
               (catch Throwable t
                 (.completeExceptionally fut t)))))
         (catch Throwable t
@@ -170,6 +177,14 @@
       (count eids)))
 
   (close [_]
+    ;; Drain in-flight async writes before teardown -- closing the LMDB env
+    ;; mid-write is a native write-after-free. Bounded so a wedged executor
+    ;; cannot hang close indefinitely.
+    (let [in-flight (into-array CompletableFuture pending)]
+      (when (pos? (alength in-flight))
+        (try
+          (.get (CompletableFuture/allOf in-flight) 5 TimeUnit/SECONDS)
+          (catch Throwable _ nil))))
     (d/close conn)))
 
 (defn open
@@ -180,7 +195,7 @@
    (open uri-or-path {}))
   ([uri-or-path opts]
    (let [conn (d/get-conn uri-or-path schema/schema (conn-opts opts))]
-     (->DatalevinStorage conn))))
+     (->DatalevinStorage conn (ConcurrentHashMap/newKeySet)))))
 
 (defn ensure-schema-version!
   "Read the persisted :schema/version. If absent, write the current
