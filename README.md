@@ -160,12 +160,17 @@ Architecture, module structure, and per-request data flow: [`docs/architecture.m
 
 ## Roadmap
 
-The goal of continuity-auth is to make device-continuity proof a viable trust signal for the open web. We aim to give every caller that can hold a private key (browser, CLI, daemon, mobile, hardware-anchored) a graceful, login-less path to a higher rate-limit tier through sustained, anomaly-free observation. Below are the tentative milestones. Priorities may shift with feedback.
+The goal of continuity-auth is to make device-continuity proof a viable, login-less trust signal for the open web: every caller that can hold a private key (browser, CLI, daemon, mobile, hardware-anchored) earns a higher rate-limit tier through sustained, anomaly-free observation rather than by proving identity. A scope rule guides what we build — we own the high-friction, security-critical surface (key handling, envelope construction, crypto) and leave low-friction host-side glue as optional helpers. Milestones are tentative (mobile is deferred to 0.99.0) and priorities may shift with feedback.
+
+**Shipped**
 
 - **0.1.0** ~~Public API, wire envelope, and DB schema stable. Ed25519 / P-256 with non-extractable Web Crypto in the browser. CLI substrate with PEM keys. HMAC IP-hashing. Key rotation and revocation. Admin endpoints.~~ [Released 2026-05-26]
 - **0.2.0** ~~Token-bucket recovery and `priority_weight` hint. Trusted callers recover from bursts at leak-rate granularity instead of at the window edge. `/v1/verify` exposes a numeric scheduling weight for host-side weighted fair queuing.~~ [Released 2026-05-27]
 - **0.3.0** ~~Global per-tier capacity caps as a class-level back-pressure gate, orthogonal to per-caller buckets. Configurable bucket parameters so capacity, leak rate, and priority weight are independently tunable per tier rather than derived from a single knob.~~ [Released 2026-05-28]
-- **0.4.0** Mobile support via hardware-anchored keys (iOS Secure Enclave, Android Keystore). The wire protocol already accommodates these. Only the client-side storage layer needs the new path.
+- **0.4.0** Passwords done right (optional knowledge-factor binding). Add a secret only you know on top of your device key, so you can reclaim the same identity from a new device. Unlike a login, the server stores only a verifier — never the secret — and you prove it by challenge instead of sending it. Upgrades "same device over time" to "same device, plus something only you know."
+- **0.5.0** Offline authorisation (Biscuit-style capability tokens). A successful verify can hand back a short-lived, narrowable token that says what the caller is allowed to do — like a ticket checked at the door — so hosts allow or deny each action without calling `/v1/verify` again. Strictly additive; the advisory verify response is unchanged.
+- **0.99.0** Mobile, with the key in the phone's secure chip (iOS Secure Enclave, Android Keystore). The wire protocol and P-256 path already accommodate this; the remaining work is a client-side key backend plus the platform DER↔raw conversions. High-friction and platform-specific, so demand-gated rather than scheduled.
+- **0.99.1** A server-side helper SDK. A thin wrapper over the documented `/v1/verify` contract for the host's queue: weighted fair queuing / delay-then-serve (using `priority_weight` from 0.2.0) and `retry_after_ms` / 429 handling. Easy enough to build yourself, so it stays optional rather than core.
 
 ## License
 
