@@ -231,6 +231,59 @@ Reclaim attaches the new pubkey to the existing identity and leaves its spaced-c
 
 **Errors:** `E_BAD_REQUEST` (malformed fields, `kf-alg` not `ed25519`, malformed `identity-ref`), `E_UNAUTHORIZED`, `E_REPLAY` (envelope nonce reused), `E_CONFLICT` (new pubkey already registered). Per threat-model T10, **every** proof failure — new-key sig / route binding, unknown identity, no verifier set, invalid kf-sig, verifier-unwrap failure — collapses to a uniform `E_UNAUTHORIZED`: an attacker learns neither which check failed nor whether the identity exists.
 
+### `POST /v1/issue-token`
+
+Mint a short-lived **Biscuit capability token** the caller can present to a host backend for **offline** authorization — the host verifies it locally with the published root public key (see `GET /v1/token-pubkey`) and allows/denies each action **without calling `/v1/verify` again**. Device-authenticated: the envelope is signed with the current device key, intent-bound to `(audience, ttl_ms)`. This is a control-plane call (client → continuity-auth, like `/v1/bootstrap`); the returned token is opaque to the client, which relays it to the host.
+
+The token asserts only the trust signal continuity-auth owns — the caller's **identity**, its currently-earned **tier**, the **audience** (host) it is for, and an **expiry**. All action-level policy lives host-side. The hot `/v1/verify` path is untouched; this endpoint is strictly additive.
+
+**Request body:**
+
+```json
+{
+  "envelope": { /* wire envelope, signed by the DEVICE key, path "/v1/issue-token",
+                   body-sha256 = sha256(issue-token-intent(audience, ttl_ms)) */ },
+  "audience": "<host id; [A-Za-z0-9._:-], <=128 chars>",
+  "ttl_ms":   300000   /* optional positive int; server clamps to the tier cap */
+}
+```
+
+**Response (200):**
+
+```json
+{ "ok": true,
+  "token":        "<base64url Biscuit>",
+  "tier":         "tracked",
+  "audience":     "my-app",
+  "expires_at":   "2026-05-29T12:05:00.000Z",
+  "identity_ref": "01J7…" }
+```
+
+The token's authority block (Datalog) is `identity("…"); tier("…"); audience("…"); check if time($t), $t <= <expires_at>`. TTL is data-driven: `effective = min(requested-or-tier-cap, tier-cap, max-ttl-ms)`. A tier whose configured cap is `0` (e.g. `:banned`) cannot mint and gets `E_FORBIDDEN` rather than a dead token. Short TTL is the only revocation — there is no revocation list in v0.5.0.
+
+**Host-side verification (offline; not an endpoint — you do this in your backend):**
+
+```java
+// any Biscuit library + the pinned root pubkey hex from GET /v1/token-pubkey
+Biscuit b = Biscuit.from_b64url(token, rootPublicKey);   // throws on bad signature
+Authorizer a = b.authorizer();
+a.set_time();                                            // injects time(now)
+// one conjunctive policy: BOTH facts must hold. Separate allow policies are
+// OR'd (first match wins), so don't split audience and tier into two.
+a.add_policy("allow if audience(\"my-app\"), tier(\"tracked\")");
+a.authorize();                                           // throws on expiry / policy failure
+```
+
+Because Biscuit supports offline attenuation, a host may *narrow* the token (append caveats with its own keypair) before handing it to a sub-service — entirely host-side, no call back to continuity-auth.
+
+**Errors:** `E_BAD_REQUEST` (missing/invalid envelope, audience, or `ttl_ms`), `E_UNAUTHORIZED` (sig / route binding / nonce), `E_FORBIDDEN` (revoked pubkey, or tier cap is 0), `E_REPLAY`.
+
+### `GET /v1/token-pubkey`
+
+Publish the Biscuit root **public** key so a host can pin it and verify issued tokens offline. Unauthenticated, cacheable; the private half never leaves the server.
+
+**Response (200):** `{ "alg": "ed25519", "public_key_hex": "<64 hex chars>" }`
+
 ### `POST /v1/admin/revoke-key`
 
 Operator-initiated revocation by thumbprint. HMAC-authenticated, no user signature required. This is the escape hatch for compromised keys whose holders can no longer (or won't) sign a `/v1/revoke-key` envelope.

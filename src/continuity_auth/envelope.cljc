@@ -293,6 +293,21 @@
                     (b64url-encode new-pubkey-bytes) ":"
                     (b64url-encode kf-sig-bytes))))
 
+(defn issue-token-intent-utf8
+  "UTF-8 bytes of the issue-token intent string. The client signs an
+  issue-token envelope (with the DEVICE key) whose `:body-sha256` is
+  `sha256(this)`; the server reconstructs it from `(audience, ttl-ms)` in
+  the request payload. Binding the device signature to the audience + ttl
+  stops a captured envelope from minting a token for a DIFFERENT audience.
+
+  Shape: `\"<audience>:<ttl-ms-or-empty>\"` (empty when ttl-ms is nil,
+  meaning \"use the tier default\").
+
+  Producer: cljs client (issue-token signer). Consumer: server
+  `handlers/issue-token`. Contract: byte-identical on both platforms."
+  [^String audience ttl-ms]
+  (utf8-encode (str audience ":" (when (some? ttl-ms) ttl-ms))))
+
 (def ^:const kf-challenge-tag-str
   "Domain-separation tag for the knowledge-factor challenge bytes. Distinct
   from the envelope `version-tag-str` so a KF signature can never be

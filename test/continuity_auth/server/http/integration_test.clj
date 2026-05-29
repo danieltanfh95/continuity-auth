@@ -9,6 +9,7 @@
    [clojure.test :refer [deftest is testing]]
    [continuity-auth.envelope :as envelope]
    [continuity-auth.server.admin.hmac :as admin-hmac]
+   [continuity-auth.server.crypto.biscuit-token :as bt]
    [continuity-auth.server.http.router :as router]
    [continuity-auth.server.observability.metrics :as metrics]
    [continuity-auth.server.storage.datalevin :as dtlv]
@@ -117,6 +118,12 @@
 ;; Fixed AES key for the kf-wrap keystore in tests; never written to disk.
 (def ^:private test-kf-wrap-secret (byte-array 32 (byte 0x37)))
 
+;; Fixed Ed25519 seed for the Biscuit root key in tests; never written to disk.
+(def ^:private test-biscuit-token
+  {:keypair    (bt/keypair-from-seed (byte-array 32 (byte 0x5a)))
+   :ttl-ms     {:anonymous 60000 :tracked 300000 :penalized 30000 :banned 0}
+   :max-ttl-ms 900000})
+
 (defn- build-set-verifier
   "Build a /v1/set-verifier request map, signed by the DEVICE key and
   intent-bound to the knowledge-factor public key."
@@ -154,6 +161,34 @@
      :kf-sig       (envelope/b64url-encode kf-sig)
      :envelope     wire}))
 
+(defn- build-issue-token
+  "Build a /v1/issue-token request map, signed by the DEVICE key and
+  intent-bound to (audience, ttl-ms). `signed-audience` lets a test sign a
+  DIFFERENT audience than it sends, to exercise the body-sha binding."
+  [{:keys [sk pk-bytes fp-digest audience ttl-ms signed-audience]}]
+  (let [intent-sha (sha256 (envelope/issue-token-intent-utf8
+                            (or signed-audience audience) ttl-ms))
+        wire (build-verify-envelope
+              {:sk sk :pk-bytes pk-bytes :ts (iso8601-now) :host-user-id ""
+               :fp-digest fp-digest :method "POST" :path "/v1/issue-token"
+               :body-sha256 intent-sha})]
+    (cond-> {:envelope wire :audience audience}
+      (some? ttl-ms) (assoc :ttl_ms ttl-ms))))
+
+(defn- token-allows?
+  "Verify `token` offline with the test root pubkey and `set_time` (now),
+  returning true iff it authorizes under `policy`. Any failure (bad sig,
+  expired, policy unsatisfied) returns false — mirrors a host's offline check."
+  [token policy]
+  (try
+    (let [b (com.clevercloud.biscuit.token.Biscuit/from_b64url
+             token (.public_key ^com.clevercloud.biscuit.crypto.KeyPair
+                                (:keypair test-biscuit-token)))
+          a (doto (.authorizer b) (.set_time) (.add_policy ^String policy))]
+      (.authorize a)
+      true)
+    (catch Exception _ false)))
+
 ;; -- HTTP harness ----------------------------------------------------------
 
 (def ^:private default-tier-limits
@@ -190,7 +225,8 @@
                    :tier-limits        tier-limits
                    :global-limits      global-limits
                    :priority-weights   priority-weights
-                   :kf-wrap-secret     test-kf-wrap-secret}
+                   :kf-wrap-secret     test-kf-wrap-secret
+                   :biscuit-token      test-biscuit-token}
                   {:trusted-cidrs []
                    :ip-header     "x-forwarded-for"
                    ;; Fixed test key so the ingress hashing is deterministic
@@ -542,7 +578,8 @@
                   :nonce-ttl-seconds  120
                   :windows            [{:window :1m :seconds 60}]
                   :tier-limits        {:anonymous {:1m 5}}
-                  :kf-wrap-secret     test-kf-wrap-secret}
+                  :kf-wrap-secret     test-kf-wrap-secret
+                  :biscuit-token      test-biscuit-token}
                  {:trusted-cidrs  []
                   :ip-header      "x-forwarded-for"
                   :ip-hmac-key    (byte-array 32 (byte 0x42))
@@ -1138,3 +1175,111 @@
                                                      :identity-ref identity-ref}))]
           (is (= 200 (:status rec)) (str "latest secret reclaims: " (:body rec)))
           (is (= identity-ref (-> rec :body :identity_ref))))))))
+
+;; -- capability tokens (v0.5.0) -------------------------------------------
+
+(deftest issue-token-returns-offline-verifiable-token
+  (testing "a bootstrapped caller obtains a Biscuit that asserts its tier +
+            audience and verifies OFFLINE with the published root pubkey"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp identity-ref]} (boot-identity! port)
+              r (http-post port "/v1/issue-token"
+                           (build-issue-token {:sk sk :pk-bytes pk-bytes
+                                               :fp-digest fp :audience "my-app"}))
+              token (-> r :body :token)]
+          (is (= 200 (:status r)) (str "issue-token: " (:body r)))
+          (is (true? (-> r :body :ok)))
+          (is (string? token))
+          (is (= "anonymous" (-> r :body :tier))
+              "a fresh identity is at the score floor → :anonymous")
+          (is (= "my-app" (-> r :body :audience)))
+          (is (= identity-ref (-> r :body :identity_ref)))
+          (is (string? (-> r :body :expires_at)))
+          ;; Offline verification by a host: the published pubkey + policy.
+          (is (token-allows? token "allow if tier(\"anonymous\")")
+              "token asserts the caller's actual tier")
+          (is (token-allows? token "allow if audience(\"my-app\")")
+              "token asserts the requested audience")
+          (is (not (token-allows? token "allow if tier(\"tracked\")"))
+              "token does NOT over-assert a higher tier")
+          (is (not (token-allows? token "allow if audience(\"other-app\")"))
+              "token is bound to its audience"))))))
+
+(deftest issue-token-clamps-ttl-to-tier-cap
+  (testing "a requested ttl above the tier cap is clamped; below the cap is honored"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp]} (boot-identity! port)
+              cap-ms     60000                 ; :anonymous cap in test config
+              parse-exp  (fn [r] (.toEpochMilli (java.time.Instant/parse
+                                                 (-> r :body :expires_at))))
+              t0   (System/currentTimeMillis)
+              big  (http-post port "/v1/issue-token"
+                              (build-issue-token {:sk sk :pk-bytes pk-bytes
+                                                 :fp-digest fp :audience "my-app"
+                                                 :ttl-ms 99999999}))
+              small (http-post port "/v1/issue-token"
+                               (build-issue-token {:sk sk :pk-bytes pk-bytes
+                                                  :fp-digest fp :audience "my-app"
+                                                  :ttl-ms 10000}))]
+          (is (= 200 (:status big)))
+          (is (= 200 (:status small)))
+          ;; Clamped to the cap (within generous slack for second-truncation
+          ;; and request latency).
+          (is (<= (- (+ t0 cap-ms) 3000) (parse-exp big) (+ t0 cap-ms 5000))
+              "huge ttl is clamped to the tier cap")
+          (is (<= (- (+ t0 10000) 3000) (parse-exp small) (+ t0 10000 5000))
+              "a ttl below the cap is honored"))))))
+
+(deftest issue-token-audience-binding-enforced
+  (testing "an envelope signed for audience A cannot mint a token for audience B"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp]} (boot-identity! port)
+              r (http-post port "/v1/issue-token"
+                           (build-issue-token {:sk sk :pk-bytes pk-bytes
+                                               :fp-digest fp
+                                               :audience "aud-B"
+                                               :signed-audience "aud-A"}))]
+          (is (= 401 (:status r)) (str "audience mismatch: " (:body r)))
+          (is (= "E_UNAUTHORIZED" (-> r :body :code))))))))
+
+(deftest issue-token-replay-rejected
+  (testing "re-sending an identical issue-token request replays the nonce"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp]} (boot-identity! port)
+              req (build-issue-token {:sk sk :pk-bytes pk-bytes
+                                      :fp-digest fp :audience "my-app"})
+              r1 (http-post port "/v1/issue-token" req)
+              r2 (http-post port "/v1/issue-token" req)]
+          (is (= 200 (:status r1)))
+          (is (= 409 (:status r2)) (str "replay: " (:body r2)))
+          (is (= "E_REPLAY" (-> r2 :body :code))))))))
+
+(deftest token-pubkey-returns-root-hex
+  (testing "GET /v1/token-pubkey publishes the root Ed25519 public key"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [r (http-get port "/v1/token-pubkey")]
+          (is (= 200 (:status r)))
+          (is (= "ed25519" (-> r :body :alg)))
+          (is (= (bt/root-public-key-hex (:keypair test-biscuit-token))
+                 (-> r :body :public_key_hex))))))))
+
+(deftest verify-response-unchanged-no-token-field
+  (testing "issuing tokens is strictly additive — /v1/verify never grows a token"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp]} (boot-identity! port)
+              v (build-verify-envelope {:sk sk :pk-bytes pk-bytes :ts (iso8601-now)
+                                        :host-user-id "" :fp-digest fp
+                                        :method "POST" :path "/v1/verify"})
+              r (http-post port "/v1/verify" {:envelope v})]
+          (is (= 200 (:status r)))
+          (is (nil? (-> r :body :token))
+              "the advisory verify response must not carry a capability token")
+          (is (= #{:ok :identity_ref :tier :retry_after_ms :priority_weight}
+                 (set (keys (:body r))))
+              "verify response keys are unchanged from v0.4"))))))

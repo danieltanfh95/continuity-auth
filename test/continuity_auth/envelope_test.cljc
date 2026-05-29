@@ -294,6 +294,26 @@
     (testing "different nonce → different bytes (single-use)"
       (is (not (ba= base (env/kf-challenge-bytes ref thumb test-key-id)))))))
 
+;; -- v0.5.0 issue-token intent --------------------------------------------
+
+(defn- utf8->str [a]
+  #?(:clj  (String. ^bytes a "UTF-8")
+     :cljs (.decode (js/TextDecoder. "utf-8") a)))
+
+(deftest issue-token-intent-shape
+  (testing "\"<audience>:<ttl-ms>\", deterministic + utf8."
+    (let [a (env/issue-token-intent-utf8 "my-app" 300000)
+          b (env/issue-token-intent-utf8 "my-app" 300000)]
+      (is (ba= a b))
+      (is (= "my-app:300000" (utf8->str a)))))
+  (testing "a nil ttl-ms renders as an empty trailing field (tier default)."
+    (is (= "my-app:" (utf8->str (env/issue-token-intent-utf8 "my-app" nil)))))
+  (testing "binding is total — audience or ttl flip changes the bytes."
+    (let [base (env/issue-token-intent-utf8 "my-app" 300000)]
+      (is (not (ba= base (env/issue-token-intent-utf8 "other" 300000))))
+      (is (not (ba= base (env/issue-token-intent-utf8 "my-app" 60000))))
+      (is (not (ba= base (env/issue-token-intent-utf8 "my-app" nil)))))))
+
 ;; -- base64url -------------------------------------------------------------
 
 (deftest b64url-known-vectors

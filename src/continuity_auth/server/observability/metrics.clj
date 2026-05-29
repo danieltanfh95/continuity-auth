@@ -27,6 +27,9 @@
        (prom/counter   :cauth/bootstrap-total
                        {:description "Total bootstrap requests by outcome"
                         :labels      [:outcome]})
+       (prom/counter   :cauth/issue-token-total
+                       {:description "Capability tokens issued by tier"
+                        :labels      [:tier]})
        (prom/counter   :cauth/signature-verify-failures-total
                        {:description "Signature verification failures by alg"
                         :labels      [:alg]})
@@ -62,6 +65,12 @@
   [registry outcome]
   (when registry
     (prom/inc registry :cauth/bootstrap-total {:outcome (name outcome)})))
+
+(defn record-issue-token!
+  [registry tier]
+  (when registry
+    (prom/inc registry :cauth/issue-token-total
+              {:tier (name (or tier :anonymous))})))
 
 (defn record-signature-failure!
   [registry alg]

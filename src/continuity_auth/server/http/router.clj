@@ -5,10 +5,12 @@
    [continuity-auth.server.http.handlers.admin :as admin]
    [continuity-auth.server.http.handlers.bootstrap :as bootstrap]
    [continuity-auth.server.http.handlers.health :as health]
+   [continuity-auth.server.http.handlers.issue-token :as issue-token]
    [continuity-auth.server.http.handlers.recover-identity :as recover-identity]
    [continuity-auth.server.http.handlers.revoke-key :as revoke-key]
    [continuity-auth.server.http.handlers.rotate-key :as rotate-key]
    [continuity-auth.server.http.handlers.set-verifier :as set-verifier]
+   [continuity-auth.server.http.handlers.token-pubkey :as token-pubkey]
    [continuity-auth.server.http.handlers.verify :as verify]
    [continuity-auth.server.http.middleware :as mw]
    [continuity-auth.server.observability.metrics :as metrics]
@@ -30,6 +32,8 @@
     ["/revoke-key"       {:post {:handler (revoke-key/make-handler deps)}}]
     ["/set-verifier"     {:post {:handler (set-verifier/make-handler deps)}}]
     ["/recover-identity" {:post {:handler (recover-identity/make-handler deps)}}]
+    ["/issue-token"      {:post {:handler (issue-token/make-handler deps)}}]
+    ["/token-pubkey"     {:get  {:handler (token-pubkey/make-handler deps)}}]
     ["/admin"
      ["/revoke-key"      {:post {:handler (admin/make-revoke-key-handler deps)}}]
      ["/config"          {:get  {:handler (admin/make-config-handler deps)}}]]]])

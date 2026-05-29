@@ -94,6 +94,12 @@ These are sparse — absent ⇒ no knowledge factor ⇒ pure pre-v6 behavior. Th
 
 A reclaim proof is **cryptographic-by-proxy** (§2): possession of the knowledge factor, proven by signing a challenge, is the gate for *re-attaching a key* — it is **not** a trust signal. Reclaim therefore grants **no tier uplift**: it attaches the new pubkey and leaves the spaced-continuity sketch (§6) untouched, so the reclaimed key inherits the identity's *earned* tier. You recover continuity, not free trust. This is the one exception to "pubkey-match is the only cluster-entry gate," and it is deliberate: the knowledge factor is itself a cryptographic gate, just keyed on something the user knows rather than something their device holds. Old keys are not auto-revoked at reclaim (the server cannot distinguish "lost device" from "second device"); the user revokes them explicitly via `revoke-key`.
 
+### 4c. Capability tokens (offline-authorisation projection)
+
+A **capability token** (`POST /v1/issue-token`) is *not* an entity — nothing is stored. It is a **read-time projection of identity state into a signed, self-contained credential**: the server recomputes the identity's tier exactly as `/verify` does (§6), then mints a Biscuit asserting `identity`, `tier`, `audience`, and an `expiry`, signed by a server-held Ed25519 root key. The caller relays this opaque token to a host, which verifies it **offline** with the published root public key and authorises each action locally — no further call to continuity-auth.
+
+The token is a **cryptographic** artifact (§2) in the issuance direction — the root signature is what a host trusts — but it is *advisory* in content: it carries the trust signal continuity-auth owns (the earned tier) and nothing about the host's action vocabulary, which the host alone governs in its own authoriser. Issuance grants no new state and no uplift; it merely re-expresses what the identity already is, with a short lifetime. Because it is stateless and read-only, it touches neither the cluster, the sketch, nor the schema. Revocation is by expiry alone (short, tier-capped TTL); see threat-model T21. The token's `tier` reflects the moment of issuance — a later demotion does not retract an outstanding token, which is precisely why the TTL is short.
+
 ## 5. Tuple lifecycle
 
 Tuples are append-only inside an identity's cluster. They have no retraction except via erasure. They are never re-bound to a different identity except via the host-link merge described in §8.

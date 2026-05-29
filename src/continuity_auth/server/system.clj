@@ -14,6 +14,7 @@
   Halt is reverse-order: server → handler → sweeper → storage."
   (:require
    [continuity-auth.server.admin.hmac :as admin-hmac]
+   [continuity-auth.server.crypto.biscuit-token :as bt]
    [continuity-auth.server.crypto.ip-hmac :as ip-hmac]
    [continuity-auth.server.crypto.verifier-box :as vbox]
    [continuity-auth.server.http.middleware :as mw]
@@ -33,7 +34,7 @@
   config.edn."
   [{:keys [server datalevin replay ratelimit scoring trusted-proxies
             limits observability grace hmac bootstrap-rate-limit
-            ip-hmac kf-wrap]
+            ip-hmac kf-wrap biscuit]
     :as config}]
   {:cauth/storage
    {:uri (:uri datalevin)}
@@ -43,6 +44,9 @@
 
    :cauth/kf-wrap-secret
    {:config (or kf-wrap {})}
+
+   :cauth/biscuit-root-key
+   {:config (or biscuit {})}
 
    :cauth/migrate
    {:storage     (ig/ref :cauth/storage)
@@ -73,6 +77,7 @@
     :admin-keystore      (ig/ref :cauth/admin-keystore)
     :ip-hmac-key         (ig/ref :cauth/ip-hmac-key)
     :kf-wrap-secret      (ig/ref :cauth/kf-wrap-secret)
+    :biscuit-token       (ig/ref :cauth/biscuit-root-key)
     :config              config
     :replay              replay
     :rate-windows        (:windows ratelimit)
@@ -111,6 +116,22 @@
   ;; verifiers at rest. Same precedence/lifecycle as :cauth/ip-hmac-key,
   ;; separate key. Process-scoped; nothing to halt.
   (vbox/load-or-create-key! (or config {})))
+
+(defmethod ig/init-key :cauth/biscuit-root-key [_ {:keys [config]}]
+  ;; Loads (or generates) the 32-byte Ed25519 root seed for Biscuit
+  ;; capability tokens, constructs the (immutable, thread-safe) KeyPair,
+  ;; and logs the PUBLIC key hex (hosts pin it to verify tokens offline —
+  ;; see GET /v1/token-pubkey). Process-scoped; nothing to halt. Returns
+  ;; {:keypair :ttl-ms :max-ttl-ms} threaded into the issue-token handler.
+  (let [cfg  (or config {})
+        seed (bt/load-or-create-seed! cfg)
+        kp   (bt/keypair-from-seed seed)]
+    (binding [*out* *err*]
+      (println (str "[:cauth/biscuit-root-key] root public key (ed25519): "
+                    (bt/root-public-key-hex kp))))
+    {:keypair    kp
+     :ttl-ms     (:ttl-ms cfg)
+     :max-ttl-ms (:max-ttl-ms cfg)}))
 
 (defmethod ig/init-key :cauth/migrate [_ {:keys [storage ip-hmac-key]}]
   (let [outcome (migrations/migrate! storage {:ip-hmac-key ip-hmac-key})]
@@ -173,7 +194,7 @@
   [_ {:keys [storage clock metrics replay rate-windows tier-limits
               priority-weights class-caps scoring proxy limits grace
               admin-keystore config bootstrap-rate-limit ip-hmac-key
-              kf-wrap-secret]}]
+              kf-wrap-secret biscuit-token]}]
   (router/make-handler
    {:store               storage
     :clock               clock
@@ -186,6 +207,7 @@
     :priority-weights    priority-weights
     :global-limits       class-caps
     :kf-wrap-secret      kf-wrap-secret
+    :biscuit-token       biscuit-token
     :registry            (:registry metrics)
     :bearer              (:bearer metrics)
     :keystore            admin-keystore

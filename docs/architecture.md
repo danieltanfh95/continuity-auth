@@ -101,6 +101,7 @@ continuity-auth.crypto                      .cljc — algorithm constants
 
 continuity-auth.server.crypto.{hash,pubkey,verify}   JVM crypto
 continuity-auth.server.crypto.{ip-hmac,verifier-box} keystore-wrapped material
+continuity-auth.server.crypto.biscuit-token         Ed25519 root key + Biscuit mint
 continuity-auth.server.storage.{schema,protocol,datalevin,migrations}
 continuity-auth.server.replay.nonce         replay cache
 continuity-auth.server.identity.{score,merge}   trust math + classification
@@ -108,7 +109,8 @@ continuity-auth.server.ratelimit.{tier,window}  tiering + windowed counter
 continuity-auth.server.http.{errors,middleware,router,envelope-check,util}
 continuity-auth.server.http.handlers.{bootstrap,verify,health,rotate-key,
                                        revoke-key,set-verifier,
-                                       recover-identity,admin}  endpoints
+                                       recover-identity,issue-token,
+                                       token-pubkey,admin}  endpoints
 continuity-auth.server.admin.hmac           admin HMAC verification
 continuity-auth.server.protocols.*          Axis / TrustPolicy / Storage seams
 continuity-auth.server.observability.{metrics,logging}
@@ -139,6 +141,8 @@ Decisions that shaped the architecture and shouldn't be re-litigated without rea
 - **No weak-attach in v1.** Cluster merge requires pubkey match or host-link attestation, no IP/fp-only continuity. Simpler, harder to poison.
 - **ClojureScript-only client.** No hand-written JS facade. shadow-cljs `:target :npm-module` provides the JS distribution.
 - **Knowledge-factor recovery: derive-and-wrap, not store-the-secret.** The KF verifier is an Ed25519 pubkey the client derives via `Argon2id(secret, salt)`; the server stores it AES-256-GCM-wrapped under a keystore secret separate from the IP-HMAC key (`crypto/verifier-box`), the same opaque-at-rest membrane as `:tuple/ip-hash`. Reclaim flows `system → recover-identity/make-handler`: the new-key envelope proves the new private key (route/nonce binding via `envelope-check`), then `verifier-box/unwrap` + `crypto/verify` check the KF signature; on success a new `Pubkey` is attached to the existing identity with no sketch change. Argon2id + BIP-39 run client-side only (`client/kf`); the JVM never runs Argon2id (it only wraps/unwraps and verifies a signature). OPAQUE/OPRF (defending a live-compromised server) is deferred — no mature JVM library, and the server-secret membrane matches the existing IP-hash boundary (threat-model T20).
+
+- **Offline authorisation: real Biscuit, minimal claims, separate endpoint.** A caller can mint a short-lived capability token (`POST /v1/issue-token`, device-key-authenticated) so a host allows/denies each action offline — verifying the token against the published root pubkey (`GET /v1/token-pubkey`) instead of re-calling `/v1/verify`. Four locked choices: (1) **real Biscuit** (`org.biscuitsec/biscuit 2.3.1`, Ed25519, `net.i2p.crypto/eddsa` — no BC conflict) rather than a bespoke token — unlike the v0.4.0 OPAQUE call there *is* a mature JVM lib, so the Clojure rule "prefer the proven library over reinventing token crypto" applies; (2) **minimal claims** — the token asserts only the trust signal we own (`identity`/`tier`/`audience`/expiry); the host writes all action-level authz in its own offline authorizer, so continuity-auth never learns the host's action vocabulary; (3) **TTL-as-revocation** — bearer tokens are offline-verified, so a tier-capped short TTL (data-driven `effective = min(requested|tier-cap, tier-cap, max-ttl-ms)`, cap 0 ⇒ `E_FORBIDDEN`) bounds a stolen token rather than a revocation list (deferred, threat-model T21); (4) **separate control-plane endpoint, client relays an opaque token** — the *client* holds the bearer artifact and presents it to the host, so a field on `/v1/verify` (which the host calls) would force a relay back down; the cljs client never parses or attenuates the Biscuit, so there is no new client crypto dep and no bundle hit. Stateless: minting reads identity/tier state and signs, writing nothing to Datalevin (`schema-version` stays 6); issuance is observed via a metrics counter, not a `TrustEvent`. Root signing key is a **separate** keystore secret from ip-hmac/kf-wrap (`crypto/biscuit-token`, purpose separation). Host-side attenuation/narrowing survives as standard Biscuit done host-side with the host's own keypair — zero work from us.
 
 ## Trade-offs accepted
 

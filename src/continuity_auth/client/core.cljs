@@ -463,3 +463,36 @@
       (when (and (>= (:status resp) 200) (< (:status resp) 300))
         (swap! state assoc :identity-ref identity-ref))
       resp)))
+
+;; -- capability tokens (offline authorisation) ----------------------------
+
+(defn issue-token!
+  "Obtain a short-lived Biscuit capability token asserting this caller's
+  earned tier, for OFFLINE authorization at a host backend. Device-
+  authenticated: signs a /v1/issue-token envelope intent-bound to
+  (audience, ttl-ms).
+
+  The returned token is OPAQUE to the client — relay it to the host (e.g.
+  `Authorization: Biscuit <token>`); the host verifies it offline with the
+  published root public key (GET /v1/token-pubkey) and authorizes each
+  action locally, without calling /v1/verify again.
+
+  `opts`:
+    :audience  host id the token is for; defaults to the :host-id from init
+    :ttl-ms    optional integer; the server clamps it to the tier cap
+
+  Returns a promise resolving to {:status, :body}. On 200 the body carries
+  {:token :tier :audience :expires_at :identity_ref}."
+  [{:keys [audience ttl-ms]}]
+  (ensure-initialized!)
+  (let [{:keys [endpoint host-id]} @state
+        aud (or audience host-id)]
+    (when-not aud
+      (throw (ex-info "issue-token! requires :audience (or :host-id from init)" {})))
+    (p/let [intent (envelope/issue-token-intent-utf8 aud ttl-ms)
+            {:keys [envelope]} (sign-control-envelope! {:path "/v1/issue-token"} intent)
+            resp (http-post endpoint "/v1/issue-token"
+                            (cond-> {:envelope envelope
+                                     :audience aud}
+                              (some? ttl-ms) (assoc :ttl_ms ttl-ms)))]
+      resp)))

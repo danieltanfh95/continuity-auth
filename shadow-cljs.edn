@@ -27,7 +27,8 @@
                                        clear            continuity-auth.client.core/clear!
                                        setHostUserId    continuity-auth.client.core/set-host-user-id!
                                        setVerifier      continuity-auth.client.core/set-verifier!
-                                       recover          continuity-auth.client.core/recover!}}}
+                                       recover          continuity-auth.client.core/recover!
+                                       issueToken       continuity-auth.client.core/issue-token!}}}
    :compiler-options {:infer-externs    :auto
                       :elide-asserts    true
                       :output-feature-set :es2020}

@@ -161,6 +161,28 @@
                            :prod "/var/lib/continuity-auth/kf-wrap.key"}]
   :key-b64  #or [#env CONTINUITY_AUTH_KF_WRAP_KEY ""]}
 
+ ;; Biscuit capability-token root SIGNING key (v0.5.0, /v1/issue-token).
+ ;; A 32-byte Ed25519 seed; the PUBLIC half is published at
+ ;; /v1/token-pubkey for hosts to verify tokens offline. SEPARATE from the
+ ;; IP-HMAC and kf-wrap keys (purpose separation). Same precedence as
+ ;; :ip-hmac / :kf-wrap:
+ ;;   1. CONTINUITY_AUTH_BISCUIT_ROOT_KEY (base64, 32 bytes) — direct env seed
+ ;;   2. :key-path (or CONTINUITY_AUTH_BISCUIT_ROOT_KEY_PATH) — EDN keyfile
+ ;;   3. If the path has no file: auto-generate 32 SecureRandom bytes (0600).
+ ;; The file MUST persist across restarts; rotating it invalidates every
+ ;; outstanding token under the old pubkey. Back it up alongside the store.
+ ;; `:ttl-ms` is the per-tier cap on token lifetime (lifetime scales with
+ ;; earned trust); a tier whose cap is 0 cannot mint. `:max-ttl-ms` is a
+ ;; global ceiling above all tiers.
+ :biscuit
+ {:key-path #or [#env CONTINUITY_AUTH_BISCUIT_ROOT_KEY_PATH
+                 #profile {:dev  "/tmp/continuity-auth-dev-biscuit-root.key"
+                           :test "/tmp/continuity-auth-test-biscuit-root.key"
+                           :prod "/var/lib/continuity-auth/biscuit-root.key"}]
+  :key-b64    #or [#env CONTINUITY_AUTH_BISCUIT_ROOT_KEY ""]
+  :ttl-ms     {:anonymous 60000 :tracked 300000 :penalized 30000 :banned 0}
+  :max-ttl-ms 900000}
+
  :observability
  {:metrics-enabled?     true
   :prometheus-bearer    #or [#env CONTINUITY_AUTH_PROM_BEARER ""]
