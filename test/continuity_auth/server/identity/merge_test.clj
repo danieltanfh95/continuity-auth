@@ -8,6 +8,7 @@
    [clojure.test.check.properties :as prop]
    [continuity-auth.server.identity.merge :as merge]
    [continuity-auth.server.identity.score :as score]
+   [continuity-auth.server.ratelimit.tier :as tier]
    [continuity-auth.server.storage.datalevin :as dtlv]
    [continuity-auth.server.storage.protocol :as storage])
   (:import
@@ -283,11 +284,110 @@
           identity-update (first (filter #(= 42 (:db/id %)) tx))
           ;; counterfactual: same sketch update but treated as clean (no violation)
           clean-after (score/score-of
-                       (score/sketch-update established-sketch now-ms false score/default-scoring)
+                       (score/sketch-update established-sketch now-ms #{} "1.1.1.1" score/default-scoring)
                        now-ms score/default-scoring)]
       (is (= 1 (:identity/violation-count identity-update)))
       (is (< (:identity/score identity-update) clean-after)
           "the violation term erodes the score below the clean-path score"))))
+
+;; -- IP-bounce velocity + durable strikes, storage round-trip (v7) --------
+
+(defn- drive-verify!
+  "Run one classify → classification-tx → transact! cycle against the live
+  store for `incoming` at wall-clock `now` (Date), under `cfg`. Returns the
+  identity-eid touched."
+  [store pid incoming now cfg]
+  (let [snap (storage/snapshot store)
+        pk   (storage/find-pubkey-by-thumbprint store snap pid)
+        cls  (merge/classify store snap incoming pk now)
+        eid  (:identity-eid cls)
+        ident (storage/pull store snap eid
+                            [:identity/created-at :identity/last-clean-at
+                             :identity/clean-count :identity/spacing
+                             :identity/violation-count :identity/last-ip-hash
+                             :identity/last-ip-change-at :identity/ip-churn
+                             :identity/ip-bounce-strikes :identity/last-strike-at])
+        sketch (merge/identity->sketch ident (.getTime ^Date now))]
+    (storage/transact! store (merge/classification-tx cls incoming sketch cfg now))
+    eid))
+
+(deftest ip-bounce-accrues-durable-strike-floors-tier-and-audits
+  (testing "rapid IP rotation under a stable fp persists strikes across
+            transacts, writes an :ip-bounce trust-event, and floors the tier —
+            even for an otherwise high-score identity"
+    (with-store
+      (fn [store]
+        ;; Lower the trip threshold + cooldown so the storage round-trip is
+        ;; exercised in a few iterations; the real-threshold calibration is
+        ;; covered in score-test (equilibrium/slow-roamer/cooldown).
+        (let [cfg (assoc score/default-scoring
+                         :churn-strike-threshold 3.0
+                         :strike-cooldown-ms     0)
+              fp  (random-bytes 32)
+              pid (random-bytes 32)
+              t0  (.getTime (Date.))]
+          (bootstrap! store "10.0.0.0" fp (random-bytes 32) pid)
+          ;; 10 distinct-IP verifies, same fp/key, 60s apart.
+          (doseq [i (range 1 11)]
+            (drive-verify! store pid
+                           {:ip (str "10.0.9." i) :fp-digest fp}
+                           (Date. (+ t0 (* (long i) 60000)))
+                           cfg))
+          (let [snap   (storage/snapshot store)
+                iid    (first (storage/q store snap
+                                         '[:find [?i ...] :where [?i :identity/id _]] []))
+                ident  (storage/pull store snap iid
+                                     [:identity/ip-bounce-strikes :identity/ip-churn
+                                      :identity/last-strike-at :identity/last-ip-hash
+                                      :identity/last-ip-change-at :identity/created-at
+                                      :identity/last-clean-at :identity/clean-count
+                                      :identity/spacing :identity/violation-count])
+                bounce-events (storage/q store snap
+                                         '[:find [?e ...]
+                                           :where [?e :trust-event/reason :ip-bounce]] [])
+                now-ms (+ t0 (* 11 60000))
+                sketch (merge/identity->sketch ident now-ms)
+                sn     (score/strikes-now sketch now-ms cfg)
+                tier   (tier/project {:score 0.9 :host-linked? false :ever-tracked? false
+                                      :ip-bounce-strikes  sn
+                                      :tier-floor-strikes (:tier-floor-strikes cfg)}
+                                     tier/default-thresholds)]
+            (is (pos? (long (or (:identity/ip-bounce-strikes ident) 0)))
+                "durable strikes persisted across transacts (instant↔ms round-trip)")
+            (is (= "10.0.9.10" (:identity/last-ip-hash ident))
+                "last-ip-hash tracks the most recent IP under stable fp")
+            (is (seq bounce-events)
+                ":ip-bounce trust-event written to the audit trail")
+            (is (>= sn (:tier-floor-strikes cfg)))
+            (is (= :penalized tier)
+                "the strike load hard-floors an otherwise-:tracked identity")))))))
+
+(deftest slow-roamer-stores-churn-but-never-strikes
+  (testing "a legit roamer (IP change once per day, stable fp) writes ip-churn
+            but accrues no strike and is not floored"
+    (with-store
+      (fn [store]
+        (let [cfg score/default-scoring
+              fp  (random-bytes 32)
+              pid (random-bytes 32)
+              t0  (.getTime (Date.))]
+          (bootstrap! store "10.0.0.0" fp (random-bytes 32) pid)
+          (doseq [i (range 1 8)]            ; a week of daily IP changes
+            (drive-verify! store pid
+                           {:ip (str "10.0.5." i) :fp-digest fp}
+                           (Date. (+ t0 (* (long i) 86400000)))
+                           cfg))
+          (let [snap  (storage/snapshot store)
+                iid   (first (storage/q store snap
+                                        '[:find [?i ...] :where [?i :identity/id _]] []))
+                ident (storage/pull store snap iid
+                                    [:identity/ip-bounce-strikes :identity/ip-churn])
+                bounce-events (storage/q store snap
+                                         '[:find [?e ...]
+                                           :where [?e :trust-event/reason :ip-bounce]] [])]
+            (is (zero? (long (or (:identity/ip-bounce-strikes ident) 0)))
+                "daily roaming never trips the threshold")
+            (is (empty? bounce-events) "no :ip-bounce audit events for a slow roamer")))))))
 
 ;; -- properties -----------------------------------------------------------
 

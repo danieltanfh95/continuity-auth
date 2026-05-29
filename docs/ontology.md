@@ -143,25 +143,32 @@ calendar time and spacing cannot.
 The sketch (updated O(1) on each verify, see §1 `Identity`):
 
 ```
-:identity/clean-count       long    pubkey-matched verifies (continuity signal)
-:identity/spacing           double  Σ ln(1+gap_days) over returns after a dormant gap
-:identity/created-at        instant first-seen (span anchor)
-:identity/last-clean-at     instant last reinforcing verify (decay + gap detection)
-:identity/violation-count   long    axis-mismatch / anomaly observations
+:identity/clean-count        long    pubkey-matched verifies (continuity signal)
+:identity/spacing            double  Σ ln(1+gap_days) over returns after a dormant gap
+:identity/created-at         instant first-seen (span anchor)
+:identity/last-clean-at      instant last reinforcing verify (decay + gap detection)
+:identity/violation-count    long    axis-mismatch / anomaly observations
+:identity/last-ip-hash       string  previous IP-hash under a stable fingerprint (v7)
+:identity/last-ip-change-at  instant anchor for the IP-churn velocity decay (v7)
+:identity/ip-churn           double  fast-decaying IP-change-velocity estimator (v7)
+:identity/ip-bounce-strikes  long    durable, slow-decaying IP-bounce penalty (v7)
+:identity/last-strike-at     instant anchor for strike decay + accrual cooldown (v7)
 ```
 
 The score is derived from the sketch at `now`:
 
 ```
-freq   = min(√clean-count, freq-cap)          ; freq-cap 4.0 (volume saturates fast)
-span   = (1 + ln(1 + span-days))^span-exp      ; span-exp 1.5 (calendar longevity)
-gap    = 1 + spacing                            ; spaced returns accumulate here
-within = (span-days < span-min) ? 0.5 : 1.0     ; penalize single-burst cram only
-decay  = 0.5 ^ (idle-days / half-life)          ; half-life 30d, idle = now − last-clean
-base   = freq · span · gap · within · decay
-earned = 1 − 2^(−base / squash-scale)           ; squash-scale 60.0 → [0,1)
-vrate  = violation-count / (violation-count + clean-count)
-score  = clamp01( (floor + (1−floor)·earned) · (1 − violation-k·vrate) )   ; floor 0.1
+freq    = min(√clean-count, freq-cap)          ; freq-cap 4.0 (volume saturates fast)
+span    = (1 + ln(1 + span-days))^span-exp      ; span-exp 1.5 (calendar longevity)
+gap     = 1 + spacing                            ; spaced returns accumulate here
+within  = (span-days < span-min) ? 0.5 : 1.0     ; penalize single-burst cram only
+decay   = 0.5 ^ (idle-days / half-life)          ; half-life 30d, idle = now − last-clean
+base    = freq · span · gap · within · decay
+earned  = 1 − 2^(−base / squash-scale)           ; squash-scale 60.0 → [0,1)
+vrate   = violation-count / (violation-count + clean-count)
+strikes = ip-bounce-strikes · 0.5^(idle-since-strike / strike-half-life) ; half-life 14d
+bpen    = 1 − bounce-k·(1 − 0.5^(strikes / bounce-strike-scale))         ; bounce-k 0.9
+score   = clamp01( (floor + (1−floor)·earned) · (1 − violation-k·vrate) · bpen )  ; floor 0.1
 ```
 
 Constants live in config `:scoring` (see [`config.edn`](../resources/config.edn))
@@ -182,6 +189,22 @@ and `score/default-scoring`. Consequences of this shape:
   *reinforces* continuity (clean-count++) while recording a violation — a
   single relocation barely dents the score; persistent mismatching erodes
   it via `vrate`.
+- **IP-bounce (v7) is a durable, fast-down penalty**, distinct from the
+  dilutable `vrate`. A same-key, *same-fingerprint* identity rotating across
+  many IPs at high frequency (the rotating-proxy signature) accrues a
+  recency-weighted velocity (`ip-churn`); crossing the threshold mints a
+  durable `ip-bounce-strikes` that decays only on a slow (14d) half-life.
+  Strikes both erode the score (`bpen`) and **hard-floor the tier to
+  `:penalized`** (see §6 `tier`), bypassing `earned` so an aged, high-trust
+  key cannot wash the penalty out with cheap clean volume. This is the
+  project's slow-up / fast-down asymmetry made concrete: a penalty is harder
+  to shed than a reward is to earn. The signal is continuity-auth's *own*
+  observation (the IP on every verify), so it lives in the global sketch and
+  is not a portable, cross-host reputation. The fingerprint gate means a
+  genuine device+network change accrues nothing — that is the `:fp` axis
+  signal — and a legit roamer changes IP far too slowly (orders of magnitude
+  below the threshold) to ever approach a strike; their key carries their
+  continuity across IP changes regardless. See threat-model T22.
 
 Each verify records a `TrustEvent` (`:trust-event/delta` = the change in
 derived score this event caused) for audit. `:identity/score` is retained

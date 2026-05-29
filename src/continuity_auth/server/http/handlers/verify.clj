@@ -99,17 +99,26 @@
                                        :identity/last-clean-at
                                        :identity/clean-count
                                        :identity/spacing
-                                       :identity/violation-count])
+                                       :identity/violation-count
+                                       :identity/last-ip-hash
+                                       :identity/last-ip-change-at
+                                       :identity/ip-churn
+                                       :identity/ip-bounce-strikes
+                                       :identity/last-strike-at])
               now-ms       (.getTime ^java.util.Date now)
               sketch       (merge/identity->sketch identity now-ms)
               ;; Trust is a spaced-continuity weight recomputed at read
               ;; time from the sketch, not the stored accumulator.
               score-now    (score/score-of sketch now-ms scoring)
+              ;; Decayed IP-bounce strike load (v7) — hard-floors the tier.
+              strikes-now  (score/strikes-now sketch now-ms scoring)
               hl?          (host-linked? store snap identity-eid)
               tier-now     (tier/project
-                            {:score         score-now
-                             :host-linked?  hl?
-                             :ever-tracked? (boolean (:identity/ever-tracked? identity))}
+                            {:score              score-now
+                             :host-linked?       hl?
+                             :ever-tracked?      (boolean (:identity/ever-tracked? identity))
+                             :ip-bounce-strikes  strikes-now
+                             :tier-floor-strikes (:tier-floor-strikes scoring)}
                             tier-thresholds)
               limits       (tier/limits-for tier-now tier-limits)
               id-specs     (window/identity-specs identity-eid windows limits)

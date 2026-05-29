@@ -99,7 +99,7 @@
   (testing "a clean verify after a spaced gap increments count and accrues spacing"
     (let [s0 {:clean-count 3 :spacing 0.5 :violation-count 1
               :created-at-ms 0 :last-clean-at-ms 0}
-          s1 (score/sketch-update s0 (* 2 DAY) false cfg)]
+          s1 (score/sketch-update s0 (* 2 DAY) #{} "ipA" cfg)]
       (is (= 4 (:clean-count s1)))
       (is (close? (+ 0.5 (Math/log 3.0)) (:spacing s1)) "spacing += ln(1+2)")
       (is (= (* 2 DAY) (:last-clean-at-ms s1)))
@@ -110,7 +110,7 @@
   (testing "a mismatch verify counts as both continuity (clean) and a violation"
     (let [s0 {:clean-count 3 :spacing 0.5 :violation-count 1
               :created-at-ms 0 :last-clean-at-ms 0}
-          s1 (score/sketch-update s0 (* 2 DAY) true cfg)]
+          s1 (score/sketch-update s0 (* 2 DAY) #{:ip} "ipA" cfg)]
       (is (= 4 (:clean-count s1)) "still a pubkey-matched reinforcement")
       (is (= 2 (:violation-count s1)) "violation-count bumped"))))
 
@@ -118,9 +118,105 @@
   (testing "a sub-gap-min return increments count but not spacing"
     (let [s0 {:clean-count 3 :spacing 0.5 :violation-count 0
               :created-at-ms 0 :last-clean-at-ms 0}
-          s1 (score/sketch-update s0 (long (* 0.1 DAY)) false cfg)]
+          s1 (score/sketch-update s0 (long (* 0.1 DAY)) #{} "ipA" cfg)]
       (is (= 4 (:clean-count s1)))
       (is (close? 0.5 (:spacing s1)) "no spacing credit for rapid-fire"))))
+
+;; -- IP-bounce velocity + durable strikes (v7) ----------------------------
+
+(defn- run-events
+  "Fold a sequence of [now-ms ip-hash mismatch-axes] events through
+  sketch-update, starting from `s0`."
+  [s0 events]
+  (reduce (fn [s [t ip axes]] (score/sketch-update s t axes ip cfg)) s0 events))
+
+(deftest legacy-sketch-has-no-bounce-penalty
+  (testing "a pre-v7 sketch (no IP fields) derives the same score as before — bpen = 1"
+    (let [sk {:clean-count 50 :spacing 5.0 :violation-count 0
+              :created-at-ms 0 :last-clean-at-ms (* 30 DAY)}
+          now (* 30 DAY)]
+      (is (= 0.0 (score/strikes-now sk now cfg)) "no strikes, no anchor ⇒ 0")
+      ;; bpen factor is exactly 1.0 when strikes-now is 0, so score is the
+      ;; pure pre-v7 (floor+earned)·(1−vrate) value.
+      (is (close? (let [b (score/base-weight sk now cfg)
+                        earned (- 1.0 (Math/pow 2.0 (- (/ b (:squash-scale cfg)))))]
+                    (+ (:score-floor cfg) (* (- 1.0 (:score-floor cfg)) earned)))
+                  (score/score-of sk now cfg))))))
+
+(deftest seeding-last-ip-counts-no-change
+  (testing "the first stable-fp verify only records last-ip-hash; no churn, no change"
+    (let [s0 {:clean-count 0 :spacing 0.0 :violation-count 0
+              :created-at-ms 0 :last-clean-at-ms 0}
+          s1 (score/sketch-update s0 0 #{} "ipA" cfg)]
+      (is (= "ipA" (:last-ip-hash s1)))
+      (is (= 0 (:last-ip-change-at-ms s1)))
+      (is (= 0.0 (:ip-churn s1)) "seeding accrues no velocity")
+      (is (= 0 (:ip-bounce-strikes s1))))))
+
+(deftest fp-mismatch-does-not-accrue-churn
+  (testing "a device+network change (fp unstable) is the :fp signal, not IP-bounce"
+    (let [s0 (score/sketch-update {:clean-count 0 :spacing 0.0 :violation-count 0
+                                   :created-at-ms 0 :last-clean-at-ms 0}
+                                  0 #{} "ipA" cfg)
+          ;; 200 changes every 60s but EACH carries an fp mismatch
+          sN (run-events s0 (for [i (range 1 201)] [(* i 60000) (str "ip" i) #{:ip :fp}]))]
+      (is (close? 0.0 (:ip-churn sN)) "fp-gate blocks churn accrual")
+      (is (= 0 (:ip-bounce-strikes sN))))))
+
+(deftest slow-roamer-never-strikes
+  (testing "a legit roamer (IP change every 30 min, ~2/hr) stays far below threshold"
+    (let [s0 (score/sketch-update {:clean-count 0 :spacing 0.0 :violation-count 0
+                                   :created-at-ms 0 :last-clean-at-ms 0}
+                                  0 #{} "ipA" cfg)
+          ;; 48 changes over 24h, all stable-fp IP mismatches
+          sN (run-events s0 (for [i (range 1 49)] [(* i 1800000) (str "ip" i) #{:ip}]))]
+      (is (< (:ip-churn sN) (:churn-strike-threshold cfg)) "equilibrium churn well under threshold")
+      (is (= 0 (:ip-bounce-strikes sN))))))
+
+(deftest rapid-bouncer-accrues-strike
+  (testing "fast IP rotation under a stable fp crosses the threshold and strikes"
+    (let [s0 (score/sketch-update {:clean-count 0 :spacing 0.0 :violation-count 0
+                                   :created-at-ms 0 :last-clean-at-ms 0}
+                                  0 #{} "ipA" cfg)
+          ;; 120 changes every 60s ≈ 2h of bouncing (rate 60/hr → churn ≫ 60)
+          sN (run-events s0 (for [i (range 1 121)] [(* i 60000) (str "ip" i) #{:ip}]))]
+      (is (>= (:ip-churn sN) (:churn-strike-threshold cfg)) "churn crosses threshold")
+      (is (>= (:ip-bounce-strikes sN) 1) "at least one durable strike"))))
+
+(deftest strike-accrual-respects-cooldown
+  (testing "one continuous bouncing session yields ≤ 1 strike per cooldown window"
+    (let [s0 (score/sketch-update {:clean-count 0 :spacing 0.0 :violation-count 0
+                                   :created-at-ms 0 :last-clean-at-ms 0}
+                                  0 #{} "ipA" cfg)
+          ;; 5h of relentless 60s-interval bouncing; cooldown is 6h → exactly 1 strike
+          sN (run-events s0 (for [i (range 1 301)] [(* i 60000) (str "ip" i) #{:ip}]))]
+      (is (= 1 (:ip-bounce-strikes sN))
+          "cooldown gates a single 5h (< 6h) session to one strike"))))
+
+(deftest strikes-decay-on-slow-half-life
+  (testing "strikes decay read-side; 2 fresh strikes clear the floor after ~1 half-life idle"
+    (let [base {:ip-bounce-strikes 2}]
+      (is (close? 2.0 (score/strikes-now (assoc base :last-strike-at-ms 0) 0 cfg))
+          "no idle ⇒ full strike load")
+      (is (close? 1.0 (score/strikes-now (assoc base :last-strike-at-ms 0)
+                                         (* 14 DAY) cfg))
+          "one 14-day half-life halves the load")
+      (is (< (score/strikes-now (assoc base :last-strike-at-ms 0) (* 14 DAY) cfg)
+             (:tier-floor-strikes cfg))
+          "after a half-life, decayed strikes drop below the tier-floor"))))
+
+(deftest bounce-pen-erodes-aged-high-trust-score
+  (testing "fresh strikes multiplicatively erode even an aged, high-earned score"
+    (let [aged {:clean-count 200 :spacing 20.0 :violation-count 0
+                :created-at-ms 0 :last-clean-at-ms (* 60 DAY)}
+          now  (* 60 DAY)
+          clean   (score/score-of aged now cfg)
+          struck  (score/score-of (assoc aged :ip-bounce-strikes 2
+                                         :last-strike-at-ms now) now cfg)]
+      (is (> clean 0.8) "aged daily-clean key is high-trust")
+      (is (< struck clean) "two fresh strikes erode it")
+      ;; bpen at 2 strikes = 1 − 0.9·(1 − 0.5^1) = 0.55
+      (is (close? (* clean 0.55) struck)))))
 
 ;; -- axis classification (unchanged) --------------------------------------
 

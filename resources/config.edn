@@ -100,7 +100,19 @@
  ;;   base   = freq · span · gap · within · decay
  ;;   earned = 1 − 2^(−base / squash-scale)
  ;;   vrate  = violation-count / (violation-count + clean-count)
- ;;   score  = clamp01( (score-floor + (1−score-floor)·earned)·(1 − violation-k·vrate) )
+ ;;   bpen   = 1 − bounce-k·(1 − 0.5^(strikes / bounce-strike-scale))   ; v7 IP-bounce
+ ;;   score  = clamp01( (score-floor + (1−score-floor)·earned)·(1 − violation-k·vrate)·bpen )
+ ;;
+ ;; IP-bounce penalty (v7): a same-key, same-fingerprint identity rotating
+ ;; across many IPs at high frequency (rotating-proxy signature) accrues a
+ ;; recency-weighted IP-change velocity (`ip-churn`, fp-gated). When the
+ ;; decayed churn crosses `:churn-strike-threshold`, a durable strike
+ ;; accrues (≤ one per `:strike-cooldown-ms`); strikes decay on the slow
+ ;; `:strike-half-life-ms` and both erode the score (`bpen`) and hard-floor
+ ;; the tier to :penalized once they reach `:tier-floor-strikes`. Defaults
+ ;; are CONSERVATIVE: trip needs ~1 IP change / 85s sustained for ~an hour —
+ ;; far above any plausible mobile/CGNAT roaming, so legit roamers (whose key
+ ;; carries their continuity across IP changes) are never penalised.
  :scoring
  {:freq-cap             4.0     ; raw volume saturates fast (anti-farming)
   :span-exponent        1.5     ; calendar-longevity curve
@@ -110,7 +122,15 @@
   :decay-half-life-days 30.0    ; idle trust halves in a month
   :squash-scale         60.0    ; weight→[0,1] squash scale (W0)
   :score-floor          0.1     ; fresh clean key floor (anonymous band)
-  :violation-k          1.0}    ; violation-rate erosion strength
+  :violation-k          1.0     ; violation-rate erosion strength
+  ;; -- IP-bounce penalty (v7) --
+  :churn-half-life-ms      3600000      ; 1h — IP-change-velocity window
+  :churn-strike-threshold  60.0         ; decayed churn making a strike eligible (~1 chg/85s)
+  :strike-cooldown-ms      21600000     ; 6h — at most one strike per window
+  :strike-half-life-ms     1209600000   ; 14d — durable but recoverable
+  :bounce-k                0.9          ; max multiplicative score erosion from strikes
+  :bounce-strike-scale     2.0          ; strikes for bpen to reach ~71% of bounce-k
+  :tier-floor-strikes      2.0}         ; decayed strikes that hard-floor tier to :penalized
 
  :trusted-proxies
  {;; Allowlist of trusted upstream CIDRs that we accept :ip-header from.

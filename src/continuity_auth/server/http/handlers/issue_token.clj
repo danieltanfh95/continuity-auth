@@ -128,15 +128,25 @@
                                     :identity/last-clean-at
                                     :identity/clean-count
                                     :identity/spacing
-                                    :identity/violation-count])
+                                    :identity/violation-count
+                                    :identity/last-ip-hash
+                                    :identity/last-ip-change-at
+                                    :identity/ip-churn
+                                    :identity/ip-bounce-strikes
+                                    :identity/last-strike-at])
             now-ms    (.getTime ^Date now)
             sketch    (merge/identity->sketch identity now-ms)
             score-now (score/score-of sketch now-ms scoring)
+            ;; The minted token must carry the floored tier (v7): an
+            ;; IP-bouncer cannot mint a token asserting :tracked.
+            strikes-now (score/strikes-now sketch now-ms scoring)
             hl?       (host-linked? store snap identity-eid)
             tier-now  (tier/project
-                       {:score         score-now
-                        :host-linked?  hl?
-                        :ever-tracked? (boolean (:identity/ever-tracked? identity))}
+                       {:score              score-now
+                        :host-linked?       hl?
+                        :ever-tracked?      (boolean (:identity/ever-tracked? identity))
+                        :ip-bounce-strikes  strikes-now
+                        :tier-floor-strikes (:tier-floor-strikes scoring)}
                        tier-thresholds)
             tier-cap  (long (get ttl-ms tier-now 0))
             requested (if (some? req-ttl-ms) (long req-ttl-ms) tier-cap)

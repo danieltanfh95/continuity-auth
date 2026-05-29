@@ -26,6 +26,32 @@
   (testing "host-linked + score >= 0.5 → tracked"
     (is (= :tracked (tier/project {:score 0.5 :host-linked? true :ever-tracked? false})))))
 
+;; -- IP-bounce hard floor (v7) -------------------------------------------
+
+(deftest ip-bounce-strikes-floor-tracked-to-penalized
+  (testing "a strike load ≥ tier-floor caps an otherwise-:tracked identity at :penalized"
+    (let [info {:score 0.9 :host-linked? false :ever-tracked? false
+                :ip-bounce-strikes 2.0 :tier-floor-strikes 2.0}]
+      (is (= :tracked (tier/project (dissoc info :ip-bounce-strikes :tier-floor-strikes)))
+          "without the floor inputs it projects :tracked on score alone")
+      (is (= :penalized (tier/project info))
+          "the hard floor overrides the high earned score"))))
+
+(deftest ip-bounce-floor-below-cutoff-no-effect
+  (testing "a strike load below the cutoff leaves the computed tier untouched"
+    (is (= :tracked (tier/project {:score 0.9 :host-linked? false :ever-tracked? false
+                                   :ip-bounce-strikes 1.9 :tier-floor-strikes 2.0})))))
+
+(deftest ip-bounce-floor-does-not-rescue-banned
+  (testing "a :banned result stays :banned even under a strike load (floor only caps downward)"
+    (is (= :banned (tier/project {:score 0.01 :host-linked? false :ever-tracked? false
+                                  :ip-bounce-strikes 5.0 :tier-floor-strikes 2.0})))))
+
+(deftest ip-bounce-floor-absent-cutoff-never-triggers
+  (testing "pre-v7 callers (no :tier-floor-strikes) are unaffected by any strike count"
+    (is (= :tracked (tier/project {:score 0.9 :host-linked? false :ever-tracked? false
+                                   :ip-bounce-strikes 99.0})))))
+
 (deftest limit-defaults-most-restrictive-at-banned
   (is (zero? (tier/limit-for :banned :1m)))
   (is (zero? (tier/limit-for :banned :5m)))

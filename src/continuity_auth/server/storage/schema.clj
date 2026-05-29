@@ -67,8 +67,26 @@
   the identity UUID, so no salt is stored. Absent ⇒ no knowledge factor
   set ⇒ pure v5 behaviour. Additive — Datalevin picks up the new attrs on
   open; no data rewrite. See `continuity-auth.server.crypto.verifier-box`
-  and `continuity-auth.server.http.handlers.{set-verifier,recover-identity}`."
-  6)
+  and `continuity-auth.server.http.handlers.{set-verifier,recover-identity}`.
+
+  v7 (2026-05-29): IP-bounce penalty (durable fast-down for a same-key,
+  same-fingerprint identity rotating across many IPs at high frequency —
+  the rotating-residential-proxy signature). Adds five sparse Identity
+  attributes that extend the trust sketch:
+  `:identity/last-ip-hash` (string) and `:identity/last-ip-change-at`
+  (instant) track the previous IP under a stable fingerprint and anchor a
+  fast (~1h half-life) exponentially-decaying IP-change-velocity estimator
+  `:identity/ip-churn` (double). When the decayed churn crosses a
+  threshold, a durable `:identity/ip-bounce-strikes` (long) accrues
+  (rate-limited to one per cooldown window via `:identity/last-strike-at`,
+  instant). Strikes decay on a slow (~14d) half-life and both erode the
+  derived score and hard-floor the tier to :penalized — realising the
+  project's slow-up / fast-down asymmetry (penalties are harder to shed
+  than rewards are to earn). A strike writes a `:trust-event` with reason
+  `:ip-bounce`. Absent ⇒ ip-churn 0, strikes 0 ⇒ identical to pure v6
+  behaviour. Additive — Datalevin picks up the new attrs on open; no data
+  rewrite. See `continuity-auth.server.identity.score`."
+  7)
 
 (def schema
   "Datalevin attribute schema, one entry per attribute. The schema is
@@ -121,6 +139,31 @@
    :identity/erased-at
    {:db/valueType :db.type/instant
     :db/index     true}
+
+   ;; -- IP-bounce velocity + durable strikes (v7) -------------------------
+   ;; Extends the trust sketch to detect a same-key, same-fingerprint
+   ;; identity rotating across many IPs at high frequency. All five are
+   ;; sparse: absent ⇒ ip-churn 0, strikes 0 ⇒ pure v6 behaviour.
+   ;; `:identity/last-ip-hash` is the previous IP-hash seen under a stable
+   ;; fingerprint; `:identity/last-ip-change-at` anchors the fast-decaying
+   ;; `:identity/ip-churn` velocity estimator; `:identity/ip-bounce-strikes`
+   ;; is the durable, slow-decaying penalty counter; `:identity/last-strike-at`
+   ;; anchors strike decay and the accrual cooldown. See
+   ;; `continuity-auth.server.identity.score`.
+   :identity/last-ip-hash
+   {:db/valueType :db.type/string}
+
+   :identity/last-ip-change-at
+   {:db/valueType :db.type/instant}
+
+   :identity/ip-churn
+   {:db/valueType :db.type/double}
+
+   :identity/ip-bounce-strikes
+   {:db/valueType :db.type/long}
+
+   :identity/last-strike-at
+   {:db/valueType :db.type/instant}
 
    ;; -- knowledge-factor binding (v6, optional identity reclaim) ----------
    ;; A user-set secret-derived verifier that lets the same identity be
@@ -380,4 +423,4 @@
   #{:pubkey-match :host-link-committed :ip-mismatch :fp-mismatch
     :all-mismatch :anomaly :decay :erasure-requested :admin-reset
     :bootstrap :rotate-key :revoke-key :admin-revoke
-    :set-verifier :recover-identity})
+    :set-verifier :recover-identity :ip-bounce})

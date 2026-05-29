@@ -106,7 +106,18 @@
    ;; read as nil) ⇒ no knowledge factor set ⇒ reclaim impossible, pure v5
    ;; behaviour. Additive — no data rewrite; this only stamps the version.
    [5 6 (fn install-v6 [storage _ctx]
-          (protocol/transact! storage [{:schema/version 6}]))]])
+          (protocol/transact! storage [{:schema/version 6}]))]
+
+   ;; -- v6 → v7: IP-bounce velocity + durable strike attrs ------------
+   ;; New sparse Identity attrs `:identity/last-ip-hash`
+   ;; `:identity/last-ip-change-at` `:identity/ip-churn`
+   ;; `:identity/ip-bounce-strikes` `:identity/last-strike-at` are declared
+   ;; in the schema map; Datalevin's schema-on-open picks them up. Existing
+   ;; identities lack them (sparse, read as nil) ⇒ ip-churn 0, strikes 0 ⇒
+   ;; pure v6 behaviour. Additive — no data rewrite; this only stamps the
+   ;; version.
+   [6 7 (fn install-v7 [storage _ctx]
+          (protocol/transact! storage [{:schema/version 7}]))]])
 
 (defn- migrations-from [from-version target-version]
   (->> migrations

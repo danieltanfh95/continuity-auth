@@ -50,7 +50,16 @@
    :created-at-ms    (if-let [^java.util.Date d (:identity/created-at identity)]
                        (.getTime d) now-ms)
    :last-clean-at-ms (if-let [^java.util.Date d (:identity/last-clean-at identity)]
-                       (.getTime d) now-ms)})
+                       (.getTime d) now-ms)
+   ;; IP-bounce velocity + durable strikes (v7). Absent ⇒ nil/0 ⇒ no churn,
+   ;; no strikes ⇒ pure pre-v7 behaviour.
+   :last-ip-hash         (:identity/last-ip-hash identity)
+   :last-ip-change-at-ms (when-let [^java.util.Date d (:identity/last-ip-change-at identity)]
+                           (.getTime d))
+   :ip-churn             (double (or (:identity/ip-churn identity) 0.0))
+   :ip-bounce-strikes    (long (or (:identity/ip-bounce-strikes identity) 0))
+   :last-strike-at-ms    (when-let [^java.util.Date d (:identity/last-strike-at identity)]
+                           (.getTime d))})
 
 ;; -- bootstrap path --------------------------------------------------------
 
@@ -95,7 +104,13 @@
       :identity/spacing         0.0
       :identity/violation-count 0
       :identity/score           score0
-      :identity/ever-tracked?   false}
+      :identity/ever-tracked?   false
+      ;; Seed the IP-bounce velocity anchor at the bootstrap IP (v7) so the
+      ;; first verify from a DIFFERENT IP counts as a change immediately.
+      :identity/last-ip-hash      (:ip incoming)
+      :identity/last-ip-change-at d
+      :identity/ip-churn          0.0
+      :identity/ip-bounce-strikes 0}
      {:db/id                   -2
       :pubkey/id               (:id pubkey)
       :pubkey/identity         -1
@@ -296,23 +311,36 @@
                        :new-tuple        (into [:pubkey-match]
                                                 (score/axis-mismatch->reasons
                                                  mismatch-axes)))
-        violation?   (boolean (seq mismatch-axes))
-        sketch'      (score/sketch-update sketch now-ms violation? scoring)
+        sketch'      (score/sketch-update sketch now-ms mismatch-axes (:ip incoming) scoring)
+        ;; A strike fired this turn iff the durable counter rose (the v7
+        ;; IP-bounce signal). The reason is overridden to :ip-bounce so the
+        ;; audit trail flags it; the score delta already reflects the strike.
+        strike?      (> (long (or (:ip-bounce-strikes sketch') 0))
+                        (long (or (:ip-bounce-strikes sketch) 0)))
         score-before (score/score-of sketch now-ms scoring)
         score-after  (score/score-of sketch' now-ms scoring)
         delta        (- score-after score-before)
         match-axes   (match-axes-set classification)
-        common       [{:db/id                    identity-eid
-                       :identity/last-event-at    d
-                       :identity/last-clean-at    d
-                       :identity/clean-count      (:clean-count sketch')
-                       :identity/spacing          (:spacing sketch')
-                       :identity/violation-count  (:violation-count sketch')
-                       :identity/score            score-after}
+        ident-tx     (cond-> {:db/id                    identity-eid
+                              :identity/last-event-at    d
+                              :identity/last-clean-at    d
+                              :identity/clean-count      (:clean-count sketch')
+                              :identity/spacing          (:spacing sketch')
+                              :identity/violation-count  (:violation-count sketch')
+                              :identity/ip-churn         (:ip-churn sketch')
+                              :identity/ip-bounce-strikes (:ip-bounce-strikes sketch')
+                              :identity/score            score-after}
+                       (:last-ip-hash sketch')
+                       (assoc :identity/last-ip-hash (:last-ip-hash sketch'))
+                       (:last-ip-change-at-ms sketch')
+                       (assoc :identity/last-ip-change-at (->date (:last-ip-change-at-ms sketch')))
+                       (:last-strike-at-ms sketch')
+                       (assoc :identity/last-strike-at (->date (:last-strike-at-ms sketch'))))
+        common       [ident-tx
                       {:trust-event/identity   identity-eid
                        :trust-event/ts         d
                        :trust-event/delta      delta
-                       :trust-event/reason     (first reasons)
+                       :trust-event/reason     (if strike? :ip-bounce (first reasons))
                        :trust-event/score-after score-after}]]
     (case kind
       :exact-observation

@@ -37,28 +37,44 @@
                                                    → :tracked
     not host-linked? AND score >= :tracked-from-score
                                                    → :tracked
-    otherwise                                      → :anonymous"
+    otherwise                                      → :anonymous
+
+  IP-bounce hard floor (v7): if `:ip-bounce-strikes` (the read-time-decayed
+  strike load) is at or above `:tier-floor-strikes`, the tier is capped at
+  :penalized regardless of the computed tier (a :banned result still stands).
+  This is the undilutable backstop — an aged, high-score identity cannot earn
+  its way out of an active IP-bounce penalty, which the multiplicative
+  `bounce-pen` score term alone would let it do. Both keys arrive in the
+  info map; the cutoff is sourced from the `:scoring` config. When
+  `:tier-floor-strikes` is absent the floor never triggers (pre-v7 callers)."
   ([identity-info]
    (project identity-info default-thresholds))
-  ([{:keys [score host-linked? ever-tracked?]} thresholds]
-   (let [s   (double (or score 0.0))
-         hl? (boolean host-linked?)
-         et? (boolean ever-tracked?)
-         t   thresholds]
-     (cond
-       (< s (:banned-from-score t))
-       :banned
+  ([{:keys [score host-linked? ever-tracked? ip-bounce-strikes tier-floor-strikes]}
+    thresholds]
+   (let [s       (double (or score 0.0))
+         hl?     (boolean host-linked?)
+         et?     (boolean ever-tracked?)
+         t       thresholds
+         base    (cond
+                   (< s (:banned-from-score t))
+                   :banned
 
-       (and et? (< s (:tracked-from-score t)))
+                   (and et? (< s (:tracked-from-score t)))
+                   :penalized
+
+                   (and hl? (>= s (:tracked-from-host-linked-score t)))
+                   :tracked
+
+                   (and (not hl?) (>= s (:tracked-from-score t)))
+                   :tracked
+
+                   :else :anonymous)
+         strikes (double (or ip-bounce-strikes 0.0))
+         floor-n (if tier-floor-strikes (double tier-floor-strikes)
+                     Double/POSITIVE_INFINITY)]
+     (if (and (>= strikes floor-n) (not= base :banned))
        :penalized
-
-       (and hl? (>= s (:tracked-from-host-linked-score t)))
-       :tracked
-
-       (and (not hl?) (>= s (:tracked-from-score t)))
-       :tracked
-
-       :else :anonymous))))
+       base))))
 
 (defn limits-for
   "Return the limits map for a tier under `all-limits`."

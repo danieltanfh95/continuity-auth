@@ -20,6 +20,7 @@
    [clojure.test :refer [deftest is testing]]
    [continuity-auth.server.identity.merge :as merge]
    [continuity-auth.server.identity.score :as score]
+   [continuity-auth.server.ratelimit.tier :as tier]
    [continuity-auth.server.storage.datalevin :as dtlv]
    [continuity-auth.server.storage.protocol :as storage])
   (:import
@@ -194,3 +195,50 @@
                                       {:ip "10.0.0.1" :fp-digest (:fp user)}
                                       pubkey (Date.))]
           (is (= :revoked-pubkey (:kind result))))))))
+
+;; -- IP-bounce penalty (v7) -----------------------------------------------
+
+(def ^:private DAY 86400000)
+
+(deftest ^:adversarial aged-bouncer-cannot-dilute-the-hard-floor
+  (testing "an aged, high-clean-count identity that bounces is floored to
+            :penalized despite a very high earned score — the durable strike +
+            tier-floor defeat the vrate-style wash-out a sleeper would exploit"
+    (let [cfg  score/default-scoring
+          now  (* 60 DAY)
+          ;; 200 spaced clean verifies over 60 days ⇒ high earned score.
+          aged {:clean-count 200 :spacing 20.0 :violation-count 0
+                :created-at-ms 0 :last-clean-at-ms now}
+          project (fn [sk]
+                    (tier/project {:score              (score/score-of sk now cfg)
+                                   :host-linked?       false
+                                   :ever-tracked?      false
+                                   :ip-bounce-strikes  (score/strikes-now sk now cfg)
+                                   :tier-floor-strikes (:tier-floor-strikes cfg)}
+                                  tier/default-thresholds))]
+      (is (> (score/score-of aged now cfg) 0.8) "the aged key is genuinely high-trust")
+      (is (= :tracked (project aged)) "without strikes it is :tracked")
+      (is (= :penalized (project (assoc aged :ip-bounce-strikes 2 :last-strike-at-ms now)))
+          "two fresh strikes hard-floor it regardless of the high earned score"))))
+
+(deftest ^:adversarial clean-volume-cannot-quickly-shed-a-strike
+  (testing "after an IP-bounce strike, farming cheap clean verifies does NOT
+            erase the durable counter — recovery is bound to wall-clock decay,
+            not to activity (so a bouncer can't buy its way back fast)"
+    (let [cfg     score/default-scoring
+          seed    (score/sketch-update {:clean-count 0 :spacing 0.0 :violation-count 0
+                                        :created-at-ms 0 :last-clean-at-ms 0}
+                                       0 #{} "ipA" cfg)
+          ;; rapid bounce burst (60s intervals, stable fp) → ≥1 durable strike
+          bounced (reduce (fn [s i]
+                            (score/sketch-update s (* (long i) 60000) #{:ip} (str "ip" i) cfg))
+                          seed (range 1 121))
+          burst-strikes (long (:ip-bounce-strikes bounced))
+          ;; 100 "clean" same-IP verifies spaced a day apart — a shedding attempt
+          farmed  (reduce (fn [s i]
+                            (score/sketch-update s (+ (* 121 60000) (* (long i) DAY))
+                                                 #{} "ipSTABLE" cfg))
+                          bounced (range 1 101))]
+      (is (>= burst-strikes 1) "the burst accrued a durable strike")
+      (is (= burst-strikes (long (:ip-bounce-strikes farmed)))
+          "clean volume never decrements the stored strike count"))))
