@@ -100,19 +100,21 @@ continuity-auth.envelope                    .cljc — shared client+server codec
 continuity-auth.crypto                      .cljc — algorithm constants
 
 continuity-auth.server.crypto.{hash,pubkey,verify}   JVM crypto
+continuity-auth.server.crypto.{ip-hmac,verifier-box} keystore-wrapped material
 continuity-auth.server.storage.{schema,protocol,datalevin,migrations}
 continuity-auth.server.replay.nonce         replay cache
 continuity-auth.server.identity.{score,merge}   trust math + classification
 continuity-auth.server.ratelimit.{tier,window}  tiering + windowed counter
 continuity-auth.server.http.{errors,middleware,router,envelope-check,util}
-continuity-auth.server.http.handlers.{bootstrap,verify,health,
-                                       rotate-key,revoke-key,admin}  endpoints
+continuity-auth.server.http.handlers.{bootstrap,verify,health,rotate-key,
+                                       revoke-key,set-verifier,
+                                       recover-identity,admin}  endpoints
 continuity-auth.server.admin.hmac           admin HMAC verification
 continuity-auth.server.protocols.*          Axis / TrustPolicy / Storage seams
 continuity-auth.server.observability.{metrics,logging}
 continuity-auth.server.{config,system,main} composition
 
-continuity-auth.client.{core,crypto,fingerprint,storage,tabs}  cljs client
+continuity-auth.client.{core,crypto,fingerprint,storage,tabs,kf}  cljs client
 continuity-auth.client.{cli,dispatch,json}  bb-compatible client CLI (bin/continuity)
 continuity-auth.admin.cli                   HMAC admin CLI (continuity admin …)
 ```
@@ -136,13 +138,14 @@ Decisions that shaped the architecture and shouldn't be re-litigated without rea
 - **Token-bucket, not sliding-log.** O(1) per check, with burst absorption up to capacity and a recovery shape (next-token-leak) friendlier to trusted callers than window-edge resets. Leak rate is configurable per cell.
 - **No weak-attach in v1.** Cluster merge requires pubkey match or host-link attestation, no IP/fp-only continuity. Simpler, harder to poison.
 - **ClojureScript-only client.** No hand-written JS facade. shadow-cljs `:target :npm-module` provides the JS distribution.
+- **Knowledge-factor recovery: derive-and-wrap, not store-the-secret.** The KF verifier is an Ed25519 pubkey the client derives via `Argon2id(secret, salt)`; the server stores it AES-256-GCM-wrapped under a keystore secret separate from the IP-HMAC key (`crypto/verifier-box`), the same opaque-at-rest membrane as `:tuple/ip-hash`. Reclaim flows `system → recover-identity/make-handler`: the new-key envelope proves the new private key (route/nonce binding via `envelope-check`), then `verifier-box/unwrap` + `crypto/verify` check the KF signature; on success a new `Pubkey` is attached to the existing identity with no sketch change. Argon2id + BIP-39 run client-side only (`client/kf`); the JVM never runs Argon2id (it only wraps/unwraps and verifies a signature). OPAQUE/OPRF (defending a live-compromised server) is deferred — no mature JVM library, and the server-secret membrane matches the existing IP-hash boundary (threat-model T20).
 
 ## Trade-offs accepted
 
 - **Read-then-write token-bucket overshoot.** Concurrent verifies for the same bucket read the same snapshot, so under flood a bucket can briefly serve slightly more than capacity before the writes settle. Bounded and acceptable for opportunistic-abuse defense; the class-cap bucket inherits the same property. Documented in `ratelimit/window.clj`. CAS/token-leasing is noted as future hardening.
 - **5-second event-loss window** on app crash (async transact). Documented in `risk-register #7` in the plan.
 - **Anonymous tier is intentionally low value.** Bootstrap is cheap, sybil gains nothing. Tier uplift requires sustained observation or host-link. Trust is a **spaced-continuity memory weight** (ontology §6), not a per-verify accumulator: it rewards *spaced* recurrence (a key seen long ago and again recently) over *massed* frequency (many hits in a burst). This is the structural anti-farming property — volume is cheap to manufacture, calendar time and spacing are not. The score is derived at read time from an O(1) per-identity sketch; a fresh clean key lands at the floor (`:anonymous`) and `:banned` is reached only through the violation term.
-- **Client lib bundle ≤ 40 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is 31.79 KB. Future fingerprint signals can blow this. We will favor signal removal over budget increase.
+- **Client lib bundle ≤ 64 KB gzipped.** Hard CI gate (`scripts/check-bundle-size.mjs`). Current bundle is 60.07 KB. The v0.4.0 jump from ~32 KB is the knowledge-factor recovery stack: Argon2id has no SubtleCrypto primitive and an Ed25519 pubkey cannot be derived from a raw seed via WebCrypto, so `client/kf` links paulmillr's audited pure-JS libraries (`@noble/hashes`, `@noble/ed25519`, `@scure/bip39` + its 2048-word list). The whole stack lands in the single `core.js`, so even verify-only consumers pay it. Documented future optimisation: code-split the KF cold path into a dynamically-imported chunk so the verify hot path returns to ~32 KB. Beyond fingerprint signals, we favor signal removal / the code-split over budget increases.
 
 ## CI posture
 

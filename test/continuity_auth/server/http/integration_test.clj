@@ -114,6 +114,46 @@
         (assoc :sig (envelope/b64url-encode sig)
                :alg "ed25519"))))
 
+;; Fixed AES key for the kf-wrap keystore in tests; never written to disk.
+(def ^:private test-kf-wrap-secret (byte-array 32 (byte 0x37)))
+
+(defn- build-set-verifier
+  "Build a /v1/set-verifier request map, signed by the DEVICE key and
+  intent-bound to the knowledge-factor public key."
+  [{:keys [sk pk-bytes fp-digest kf-pk-bytes]}]
+  (let [intent-sha (sha256 (envelope/set-verifier-intent-utf8 kf-pk-bytes :ed25519))
+        wire (build-verify-envelope
+              {:sk sk :pk-bytes pk-bytes :ts (iso8601-now) :host-user-id ""
+               :fp-digest fp-digest :method "POST" :path "/v1/set-verifier"
+               :body-sha256 intent-sha})]
+    {:envelope wire
+     :kf-pubkey (envelope/b64url-encode kf-pk-bytes)
+     :kf-alg "ed25519"}))
+
+(defn- build-recover-request
+  "Build a /v1/recover-identity request map. The NEW device key signs the
+  envelope; the KF key signs the kf-challenge. Both share the envelope
+  nonce so the proof is bound + single-use."
+  [{:keys [new-sk new-pk-bytes kf-sk fp-digest identity-ref]}]
+  (let [nonce     (let [b (byte-array 16)] (.nextBytes (SecureRandom.) b) b)
+        new-thumb (sha256 new-pk-bytes)
+        kf-sig    (ed25519-sign kf-sk (envelope/kf-challenge-bytes
+                                       identity-ref new-thumb nonce))
+        intent-sha (sha256 (envelope/recover-intent-utf8
+                            identity-ref new-pk-bytes kf-sig))
+        env        {:method "POST" :path "/v1/recover-identity"
+                    :body-sha256 intent-sha :ts (iso8601-now) :nonce nonce
+                    :fp-digest fp-digest :host-user-id "" :key-id new-thumb}
+        sig        (ed25519-sign new-sk (envelope/canonical-bytes env))
+        wire       (-> (envelope/envelope->wire env)
+                       (assoc :sig (envelope/b64url-encode sig) :alg "ed25519"))]
+    {:identity-ref identity-ref
+     :new-pubkey   (envelope/b64url-encode new-pk-bytes)
+     :new-alg      "ed25519"
+     :kf-alg       "ed25519"
+     :kf-sig       (envelope/b64url-encode kf-sig)
+     :envelope     wire}))
+
 ;; -- HTTP harness ----------------------------------------------------------
 
 (def ^:private default-tier-limits
@@ -149,7 +189,8 @@
                                          {:window :1d :seconds 86400}]
                    :tier-limits        tier-limits
                    :global-limits      global-limits
-                   :priority-weights   priority-weights}
+                   :priority-weights   priority-weights
+                   :kf-wrap-secret     test-kf-wrap-secret}
                   {:trusted-cidrs []
                    :ip-header     "x-forwarded-for"
                    ;; Fixed test key so the ingress hashing is deterministic
@@ -500,7 +541,8 @@
                   :tolerance-seconds  60
                   :nonce-ttl-seconds  120
                   :windows            [{:window :1m :seconds 60}]
-                  :tier-limits        {:anonymous {:1m 5}}}
+                  :tier-limits        {:anonymous {:1m 5}}
+                  :kf-wrap-secret     test-kf-wrap-secret}
                  {:trusted-cidrs  []
                   :ip-header      "x-forwarded-for"
                   :ip-hmac-key    (byte-array 32 (byte 0x42))
@@ -889,3 +931,210 @@
         (is (= 409 (:status second))
             (str "second bootstrap must be E_CONFLICT: " (:body second)))
         (is (= "E_CONFLICT" (-> second :body :code)))))))
+
+;; -- v0.4.0: knowledge-factor binding + identity reclaim ------------------
+
+(defn- boot-identity!
+  "Bootstrap a fresh identity. Returns {:sk :pk-bytes :fp :identity-ref}."
+  [port]
+  (let [kp (gen-ed25519)
+        fp (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+        {:keys [wire pubkey-b64]} (build-bootstrap-envelope
+                                   {:sk (:sk kp) :pk-bytes (:pk-bytes kp)
+                                    :ts (iso8601-now) :host-user-id "" :fp-digest fp})
+        boot (http-post port "/v1/bootstrap"
+                        {:envelope wire :pubkey pubkey-b64 :alg "ed25519"})]
+    (assert (= 201 (:status boot)) (str "bootstrap failed: " (:body boot)))
+    {:sk (:sk kp) :pk-bytes (:pk-bytes kp) :fp fp
+     :identity-ref (-> boot :body :identity_ref)}))
+
+(deftest set-verifier-then-reclaim-preserves-identity
+  (testing "set a verifier on the trusted device, then reclaim the SAME
+            identity from a brand-new device key using the knowledge factor"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp identity-ref]} (boot-identity! port)
+              kf (gen-ed25519)               ; the secret-derived KF keypair
+              sv (build-set-verifier {:sk sk :pk-bytes pk-bytes :fp-digest fp
+                                      :kf-pk-bytes (:pk-bytes kf)})
+              sv-res (http-post port "/v1/set-verifier" sv)
+              _ (is (= 200 (:status sv-res)) (str "set-verifier: " (:body sv-res)))
+              _ (is (true? (-> sv-res :body :ok)))
+              _ (is (string? (-> sv-res :body :kf_set_at)))
+
+              new-kp (gen-ed25519)           ; a fresh device key
+              req (build-recover-request {:new-sk (:sk new-kp)
+                                          :new-pk-bytes (:pk-bytes new-kp)
+                                          :kf-sk (:sk kf)
+                                          :fp-digest fp
+                                          :identity-ref identity-ref})
+              rec (http-post port "/v1/recover-identity" req)]
+          (is (= 200 (:status rec)) (str "recover: " (:body rec)))
+          (is (true? (-> rec :body :ok)))
+          (is (= identity-ref (-> rec :body :identity_ref))
+              "reclaim must return the SAME identity, not a new one")
+          (is (string? (-> rec :body :new_key_id)))
+          ;; The new key now resolves to the original identity on /verify.
+          (let [v (build-verify-envelope
+                   {:sk (:sk new-kp) :pk-bytes (:pk-bytes new-kp)
+                    :ts (iso8601-now) :host-user-id "" :fp-digest fp
+                    :method "POST" :path "/v1/verify"})
+                vr (http-post port "/v1/verify" {:envelope v})]
+            (is (= 200 (:status vr)) (str "verify with reclaimed key: " (:body vr)))
+            (is (= identity-ref (-> vr :body :identity_ref))
+                "the reclaimed device key inherits the original identity")))))))
+
+(deftest recover-wrong-secret-rejected
+  (testing "a KF signature from the WRONG secret-derived key is rejected
+            with E_UNAUTHORIZED (indistinguishable from other failures)"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp identity-ref]} (boot-identity! port)
+              kf       (gen-ed25519)
+              wrong-kf (gen-ed25519)         ; different "password"
+              _  (http-post port "/v1/set-verifier"
+                            (build-set-verifier {:sk sk :pk-bytes pk-bytes :fp-digest fp
+                                                 :kf-pk-bytes (:pk-bytes kf)}))
+              new-kp (gen-ed25519)
+              req (build-recover-request {:new-sk (:sk new-kp)
+                                          :new-pk-bytes (:pk-bytes new-kp)
+                                          :kf-sk (:sk wrong-kf) ; wrong secret
+                                          :fp-digest fp
+                                          :identity-ref identity-ref})
+              rec (http-post port "/v1/recover-identity" req)]
+          (is (= 401 (:status rec)) (str "wrong secret: " (:body rec)))
+          (is (= "E_UNAUTHORIZED" (-> rec :body :code))))))))
+
+(deftest recover-unknown-identity-rejected
+  (testing "reclaim against an unknown identity_ref is E_UNAUTHORIZED,
+            indistinguishable from a wrong secret (no existence oracle)"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [fp (let [b (byte-array 32)] (.nextBytes (SecureRandom.) b) b)
+              kf (gen-ed25519)
+              new-kp (gen-ed25519)
+              req (build-recover-request {:new-sk (:sk new-kp)
+                                          :new-pk-bytes (:pk-bytes new-kp)
+                                          :kf-sk (:sk kf)
+                                          :fp-digest fp
+                                          :identity-ref (str (random-uuid))})
+              rec (http-post port "/v1/recover-identity" req)]
+          (is (= 401 (:status rec)) (str "unknown identity: " (:body rec)))
+          (is (= "E_UNAUTHORIZED" (-> rec :body :code))))))))
+
+(deftest recover-without-verifier-rejected
+  (testing "an identity that never set a verifier cannot be reclaimed"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [fp identity-ref]} (boot-identity! port)
+              kf (gen-ed25519)
+              new-kp (gen-ed25519)
+              req (build-recover-request {:new-sk (:sk new-kp)
+                                          :new-pk-bytes (:pk-bytes new-kp)
+                                          :kf-sk (:sk kf)
+                                          :fp-digest fp
+                                          :identity-ref identity-ref})
+              rec (http-post port "/v1/recover-identity" req)]
+          (is (= 401 (:status rec)) (str "no verifier set: " (:body rec)))
+          (is (= "E_UNAUTHORIZED" (-> rec :body :code))))))))
+
+(deftest recover-kf-sig-bound-to-different-key-rejected
+  (testing "a kf-sig computed over a DIFFERENT new pubkey than the one
+            submitted is rejected — an eavesdropper cannot swap in their key"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp identity-ref]} (boot-identity! port)
+              kf (gen-ed25519)
+              _ (http-post port "/v1/set-verifier"
+                           (build-set-verifier {:sk sk :pk-bytes pk-bytes :fp-digest fp
+                                                :kf-pk-bytes (:pk-bytes kf)}))
+              attacker-kp (gen-ed25519)      ; the key actually submitted
+              victim-kp   (gen-ed25519)      ; the key the kf-sig is bound to
+              nonce (let [b (byte-array 16)] (.nextBytes (SecureRandom.) b) b)
+              ;; kf-sig over the VICTIM's thumbprint…
+              kf-sig (ed25519-sign (:sk kf)
+                                   (envelope/kf-challenge-bytes
+                                    identity-ref (sha256 (:pk-bytes victim-kp)) nonce))
+              ;; …but the request carries the ATTACKER's pubkey.
+              new-pk (:pk-bytes attacker-kp)
+              intent-sha (sha256 (envelope/recover-intent-utf8 identity-ref new-pk kf-sig))
+              env {:method "POST" :path "/v1/recover-identity"
+                   :body-sha256 intent-sha :ts (iso8601-now) :nonce nonce
+                   :fp-digest fp :host-user-id "" :key-id (sha256 new-pk)}
+              sig (ed25519-sign (:sk attacker-kp) (envelope/canonical-bytes env))
+              wire (-> (envelope/envelope->wire env)
+                       (assoc :sig (envelope/b64url-encode sig) :alg "ed25519"))
+              rec (http-post port "/v1/recover-identity"
+                             {:identity-ref identity-ref :new-pubkey (envelope/b64url-encode new-pk)
+                              :new-alg "ed25519" :kf-alg "ed25519"
+                              :kf-sig (envelope/b64url-encode kf-sig) :envelope wire})]
+          (is (= 401 (:status rec)) (str "key-swap must fail: " (:body rec)))
+          (is (= "E_UNAUTHORIZED" (-> rec :body :code))))))))
+
+(deftest recover-replay-rejected
+  (testing "a verbatim recover replay is rejected (409)"
+    ;; The pubkey-uniqueness gate fires BEFORE the nonce cache (same
+    ;; conflict-before-crypto convention as /bootstrap and /rotate-key),
+    ;; so a verbatim replay surfaces as E_CONFLICT — the new key is
+    ;; already attached from the first call. The envelope nonce defense
+    ;; still backstops the general case; it is exercised directly by
+    ;; bootstrap-replay. Either way the replay is blocked.
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp identity-ref]} (boot-identity! port)
+              kf (gen-ed25519)
+              _ (http-post port "/v1/set-verifier"
+                           (build-set-verifier {:sk sk :pk-bytes pk-bytes :fp-digest fp
+                                                :kf-pk-bytes (:pk-bytes kf)}))
+              new-kp (gen-ed25519)
+              req (build-recover-request {:new-sk (:sk new-kp)
+                                          :new-pk-bytes (:pk-bytes new-kp)
+                                          :kf-sk (:sk kf) :fp-digest fp
+                                          :identity-ref identity-ref})
+              r1 (http-post port "/v1/recover-identity" req)
+              r2 (http-post port "/v1/recover-identity" req)]
+          (is (= 200 (:status r1)) (str "first recover: " (:body r1)))
+          (is (= 409 (:status r2)) (str "replay must be rejected: " (:body r2)))
+          (is (= "E_CONFLICT" (-> r2 :body :code))))))))
+
+(deftest recover-with-already-registered-key-rejected
+  (testing "reclaiming onto a pubkey that is already registered is E_CONFLICT"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp identity-ref]} (boot-identity! port)
+              kf (gen-ed25519)
+              _ (http-post port "/v1/set-verifier"
+                           (build-set-verifier {:sk sk :pk-bytes pk-bytes :fp-digest fp
+                                                :kf-pk-bytes (:pk-bytes kf)}))
+              ;; Reuse the EXISTING device key as the "new" key — already in DB.
+              req (build-recover-request {:new-sk sk :new-pk-bytes pk-bytes
+                                          :kf-sk (:sk kf) :fp-digest fp
+                                          :identity-ref identity-ref})
+              rec (http-post port "/v1/recover-identity" req)]
+          (is (= 409 (:status rec)) (str "already-registered key: " (:body rec)))
+          (is (= "E_CONFLICT" (-> rec :body :code))))))))
+
+(deftest set-verifier-overwrites-existing
+  (testing "setting a verifier twice overwrites; the latest secret wins"
+    (with-running-system
+      (fn [{:keys [port]}]
+        (let [{:keys [sk pk-bytes fp identity-ref]} (boot-identity! port)
+              kf1 (gen-ed25519)
+              kf2 (gen-ed25519)
+              r1 (http-post port "/v1/set-verifier"
+                            (build-set-verifier {:sk sk :pk-bytes pk-bytes :fp-digest fp
+                                                 :kf-pk-bytes (:pk-bytes kf1)}))
+              r2 (http-post port "/v1/set-verifier"
+                            (build-set-verifier {:sk sk :pk-bytes pk-bytes :fp-digest fp
+                                                 :kf-pk-bytes (:pk-bytes kf2)}))
+              _ (is (= 200 (:status r1)))
+              _ (is (= 200 (:status r2)) "re-binding a verifier is allowed")
+              ;; The SECOND secret now reclaims; the first no longer does.
+              new-kp (gen-ed25519)
+              rec (http-post port "/v1/recover-identity"
+                             (build-recover-request {:new-sk (:sk new-kp)
+                                                     :new-pk-bytes (:pk-bytes new-kp)
+                                                     :kf-sk (:sk kf2) :fp-digest fp
+                                                     :identity-ref identity-ref}))]
+          (is (= 200 (:status rec)) (str "latest secret reclaims: " (:body rec)))
+          (is (= identity-ref (-> rec :body :identity_ref))))))))

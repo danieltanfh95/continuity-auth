@@ -15,6 +15,7 @@
   (:require
    [continuity-auth.server.admin.hmac :as admin-hmac]
    [continuity-auth.server.crypto.ip-hmac :as ip-hmac]
+   [continuity-auth.server.crypto.verifier-box :as vbox]
    [continuity-auth.server.http.middleware :as mw]
    [continuity-auth.server.http.router :as router]
    [continuity-auth.server.observability.logging :as logging]
@@ -32,13 +33,16 @@
   config.edn."
   [{:keys [server datalevin replay ratelimit scoring trusted-proxies
             limits observability grace hmac bootstrap-rate-limit
-            ip-hmac]
+            ip-hmac kf-wrap]
     :as config}]
   {:cauth/storage
    {:uri (:uri datalevin)}
 
    :cauth/ip-hmac-key
    {:config (or ip-hmac {})}
+
+   :cauth/kf-wrap-secret
+   {:config (or kf-wrap {})}
 
    :cauth/migrate
    {:storage     (ig/ref :cauth/storage)
@@ -68,6 +72,7 @@
     :metrics             (ig/ref :cauth/metrics)
     :admin-keystore      (ig/ref :cauth/admin-keystore)
     :ip-hmac-key         (ig/ref :cauth/ip-hmac-key)
+    :kf-wrap-secret      (ig/ref :cauth/kf-wrap-secret)
     :config              config
     :replay              replay
     :rate-windows        (:windows ratelimit)
@@ -100,6 +105,12 @@
   ;; 32-byte secret on disk if none is configured. Returns the raw
   ;; ^bytes secret. Lifetime is process-scoped; nothing to halt.
   (ip-hmac/load-or-create-key! (or config {})))
+
+(defmethod ig/init-key :cauth/kf-wrap-secret [_ {:keys [config]}]
+  ;; Loads (or generates) the 32-byte AES key used to wrap knowledge-factor
+  ;; verifiers at rest. Same precedence/lifecycle as :cauth/ip-hmac-key,
+  ;; separate key. Process-scoped; nothing to halt.
+  (vbox/load-or-create-key! (or config {})))
 
 (defmethod ig/init-key :cauth/migrate [_ {:keys [storage ip-hmac-key]}]
   (let [outcome (migrations/migrate! storage {:ip-hmac-key ip-hmac-key})]
@@ -161,7 +172,8 @@
 (defmethod ig/init-key :cauth/http-handler
   [_ {:keys [storage clock metrics replay rate-windows tier-limits
               priority-weights class-caps scoring proxy limits grace
-              admin-keystore config bootstrap-rate-limit ip-hmac-key]}]
+              admin-keystore config bootstrap-rate-limit ip-hmac-key
+              kf-wrap-secret]}]
   (router/make-handler
    {:store               storage
     :clock               clock
@@ -173,6 +185,7 @@
     :tier-limits         tier-limits
     :priority-weights    priority-weights
     :global-limits       class-caps
+    :kf-wrap-secret      kf-wrap-secret
     :registry            (:registry metrics)
     :bearer              (:bearer metrics)
     :keystore            admin-keystore

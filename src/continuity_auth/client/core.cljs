@@ -30,6 +30,7 @@
    [clojure.string :as str]
    [continuity-auth.client.crypto :as crypto]
    [continuity-auth.client.fingerprint :as fingerprint]
+   [continuity-auth.client.kf :as kf]
    [continuity-auth.client.storage :as storage]
    [continuity-auth.client.tabs :as tabs]
    [continuity-auth.envelope :as envelope]
@@ -45,6 +46,7 @@
          :keypair      nil      ; in-memory cache of CryptoKeys
          :pubkey-bytes nil      ; canonical bytes
          :key-id       nil      ; thumbprint
+         :identity-ref nil      ; server-assigned identity UUID (from verify/bootstrap)
          :host-user-id nil}))   ; host can set later
 
 (defn- iso8601-now []
@@ -171,6 +173,14 @@
     {:status (.-status resp)
      :body   (js->clj parsed :keywordize-keys true)}))
 
+(defn- capture-identity-ref!
+  "Record the server-assigned identity_ref from a verify/bootstrap response
+  so KF set-verifier can derive the recovery salt later. Returns `resp`."
+  [resp]
+  (when-let [ref (-> resp :body :identity_ref)]
+    (swap! state assoc :identity-ref ref))
+  resp)
+
 ;; -- public API ------------------------------------------------------------
 
 (defn init
@@ -251,7 +261,7 @@
             ;; here in v1; the caller invokes (verify {...}) for the
             ;; bootstrap target on first run.
             resp (http-post endpoint "/v1/verify" {:envelope envelope})]
-      resp)))
+      (capture-identity-ref! resp))))
 
 (defn bootstrap!
   "Explicitly POST /v1/bootstrap with the current keypair. Returns the
@@ -264,7 +274,7 @@
                                               :body   ""})
             resp (http-post endpoint "/v1/bootstrap"
                             (bootstrap-payload envelope pubkey-bytes alg))]
-      resp)))
+      (capture-identity-ref! resp))))
 
 ;; -- rotate-key / revoke --------------------------------------------------
 ;;
@@ -374,3 +384,82 @@
   "Update the host_user_id used in subsequent envelopes."
   [user-id]
   (swap! state assoc :host-user-id user-id))
+
+;; -- knowledge-factor: set-verifier / recover -----------------------------
+;;
+;; A knowledge factor (a secret only the user knows) lets the SAME identity
+;; be reclaimed from a new device after the device key is lost. The server
+;; stores only an encrypted verifier; the secret never leaves the browser.
+;; Both calls are COLD paths — they pull in Argon2id + Ed25519 + BIP-39
+;; (see `client.kf`), never touched by the hot verify path.
+
+(defn set-verifier!
+  "Bind a knowledge factor to the current identity so it can be reclaimed
+  from a new device. Device-authenticated: derives the KF Ed25519 keypair
+  from `secret` + this identity's UUID, then signs a /v1/set-verifier
+  envelope with the current DEVICE key, intent-bound to the KF public key.
+
+  Requires a known identity_ref — call `verify` (or `bootstrap`) first; its
+  response establishes it. The KF private key is derived, used to compute
+  the public verifier, and discarded — it is never sent or stored.
+
+  Returns a promise resolving to {:status, :body, :mnemonic}. `:mnemonic`
+  is the 12-word BIP-39 recovery phrase the user MUST write down; recovery
+  needs both the phrase and the secret."
+  [{:keys [secret]}]
+  (ensure-initialized!)
+  (let [{:keys [endpoint identity-ref]} @state]
+    (when-not identity-ref
+      (throw (ex-info "set-verifier! requires a known identity_ref; call verify or bootstrap first" {})))
+    (p/let [{:keys [pub]} (kf/derive-kf-keypair secret identity-ref)
+            intent (envelope/set-verifier-intent-utf8 pub :ed25519)
+            {:keys [envelope]} (sign-control-envelope! {:path "/v1/set-verifier"} intent)
+            resp (http-post endpoint "/v1/set-verifier"
+                            {:envelope  envelope
+                             :kf-pubkey (envelope/b64url-encode pub)
+                             :kf-alg    "ed25519"})]
+      (assoc resp :mnemonic (kf/mnemonic-of identity-ref)))))
+
+(defn recover!
+  "Reclaim an existing identity onto THIS (freshly initialized) device using
+  the recovery phrase + the knowledge-factor secret. Decodes the mnemonic to
+  the identity UUID, re-derives the KF keypair, signs the kf-challenge with
+  it, and signs a /v1/recover-identity envelope with this device's key. The
+  new-key envelope and the kf-challenge share one nonce so the proof is both
+  route-bound and single-use.
+
+  On success the current device key is attached to the recovered identity
+  (inheriting its earned tier — reclaim grants no uplift) and identity_ref is
+  recorded. Returns a promise resolving to the parsed server response. All
+  proof failures collapse to E_UNAUTHORIZED (the server never reveals which
+  check failed, nor whether the identity exists)."
+  [{:keys [secret mnemonic]}]
+  (ensure-initialized!)
+  (let [{:keys [endpoint keypair pubkey-bytes key-id alg host-user-id]} @state
+        identity-ref (kf/uuid-of mnemonic)]
+    (p/let [{:keys [priv]} (kf/derive-kf-keypair secret identity-ref)
+            fp        (fingerprint/compute-digest)
+            nonce     (random-bytes 16)
+            challenge (envelope/kf-challenge-bytes identity-ref key-id nonce)
+            kf-sig    (kf/kf-sign priv challenge)
+            intent    (envelope/recover-intent-utf8 identity-ref pubkey-bytes kf-sig)
+            body-sha  (crypto/sha256 intent)
+            env       {:method       "POST"
+                       :path         "/v1/recover-identity"
+                       :body-sha256  body-sha
+                       :ts           (iso8601-now)
+                       :nonce        nonce
+                       :fp-digest    (:digest fp)
+                       :host-user-id (or host-user-id "")
+                       :key-id       key-id}
+            wire (sign-envelope! env (:private-key keypair) alg)
+            resp (http-post endpoint "/v1/recover-identity"
+                            {:identity-ref identity-ref
+                             :new-pubkey   (envelope/b64url-encode pubkey-bytes)
+                             :new-alg      (name alg)
+                             :kf-alg       "ed25519"
+                             :kf-sig       (envelope/b64url-encode kf-sig)
+                             :envelope     wire})]
+      (when (and (>= (:status resp) 200) (< (:status resp) 300))
+        (swap! state assoc :identity-ref identity-ref))
+      resp)))

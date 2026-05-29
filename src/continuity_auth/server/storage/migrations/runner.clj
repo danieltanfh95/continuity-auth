@@ -97,7 +97,16 @@
    ;; :anonymous, so everyone re-earns trust from the safe default.
    ;; Additive — no data rewrite; this only stamps the version.
    [4 5 (fn install-v5 [storage _ctx]
-          (protocol/transact! storage [{:schema/version 5}]))]])
+          (protocol/transact! storage [{:schema/version 5}]))]
+
+   ;; -- v5 → v6: knowledge-factor binding attrs (identity reclaim) ----
+   ;; New sparse Identity attrs `:identity/kf-verifier` `:kf-alg`
+   ;; `:kf-kdf` `:kf-set-at` are declared in the schema map; Datalevin's
+   ;; schema-on-open picks them up. Existing identities lack them (sparse,
+   ;; read as nil) ⇒ no knowledge factor set ⇒ reclaim impossible, pure v5
+   ;; behaviour. Additive — no data rewrite; this only stamps the version.
+   [5 6 (fn install-v6 [storage _ctx]
+          (protocol/transact! storage [{:schema/version 6}]))]])
 
 (defn- migrations-from [from-version target-version]
   (->> migrations

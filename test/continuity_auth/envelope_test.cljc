@@ -228,6 +228,72 @@
       (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
                    (env/wire->envelope wire))))))
 
+;; -- v6 knowledge-factor intents ------------------------------------------
+
+(def ^:private test-kf-pubkey
+  (from-hex "3333333333333333333333333333333333333333333333333333333333333333"))
+
+(def ^:private test-new-pubkey
+  (from-hex "4444444444444444444444444444444444444444444444444444444444444444"))
+
+(def ^:private test-kf-sig
+  (from-hex (apply str (repeat 64 "cd"))))
+
+(deftest set-verifier-intent-shape
+  (testing "\"<b64url(kf-pubkey)>:<name(kf-alg)>\", deterministic + utf8."
+    (let [a (env/set-verifier-intent-utf8 test-kf-pubkey :ed25519)
+          b (env/set-verifier-intent-utf8 test-kf-pubkey :ed25519)]
+      (is (ba= a b))
+      (is (= (str (env/b64url-encode test-kf-pubkey) ":ed25519")
+             #?(:clj  (String. ^bytes a "UTF-8")
+                :cljs (.decode (js/TextDecoder. "utf-8") a))))))
+  (testing "a different kf-pubkey changes the bytes."
+    (is (not (ba= (env/set-verifier-intent-utf8 test-kf-pubkey :ed25519)
+                  (env/set-verifier-intent-utf8 test-new-pubkey :ed25519))))))
+
+(deftest recover-intent-shape
+  (testing "\"<identity-ref>:<b64url(new-pubkey)>:<b64url(kf-sig)>\"."
+    (let [ref "11111111-2222-3333-4444-555555555555"
+          a   (env/recover-intent-utf8 ref test-new-pubkey test-kf-sig)]
+      (is (= (str ref ":"
+                  (env/b64url-encode test-new-pubkey) ":"
+                  (env/b64url-encode test-kf-sig))
+             #?(:clj  (String. ^bytes a "UTF-8")
+                :cljs (.decode (js/TextDecoder. "utf-8") a))))))
+  (testing "binding is total — any field flip changes the bytes."
+    (let [ref "11111111-2222-3333-4444-555555555555"
+          base (env/recover-intent-utf8 ref test-new-pubkey test-kf-sig)]
+      (is (not (ba= base (env/recover-intent-utf8 "00000000-0000-0000-0000-000000000000"
+                                                  test-new-pubkey test-kf-sig))))
+      (is (not (ba= base (env/recover-intent-utf8 ref test-kf-pubkey test-kf-sig)))))))
+
+(deftest kf-challenge-bytes-deterministic-and-tagged
+  (let [ref   "11111111-2222-3333-4444-555555555555"
+        thumb test-new-pubkey
+        a     (env/kf-challenge-bytes ref thumb test-nonce)
+        b     (env/kf-challenge-bytes ref thumb test-nonce)]
+    (testing "deterministic"
+      (is (ba= a b)))
+    (testing "starts with the literal 'FPLKF1\\n' domain tag (distinct from FPL2)"
+      (is (= 0x46 (env/ba-get a 0)))   ; F
+      (is (= 0x50 (env/ba-get a 1)))   ; P
+      (is (= 0x4c (env/ba-get a 2)))   ; L
+      (is (= 0x4b (env/ba-get a 3)))   ; K
+      (is (= 0x46 (env/ba-get a 4)))   ; F
+      (is (= 0x31 (env/ba-get a 5)))   ; 1
+      (is (= 0x0a (env/ba-get a 6)))))) ; \n
+
+(deftest kf-challenge-binds-every-component
+  (let [ref   "11111111-2222-3333-4444-555555555555"
+        thumb test-new-pubkey
+        base  (env/kf-challenge-bytes ref thumb test-nonce)]
+    (testing "different identity-ref → different bytes"
+      (is (not (ba= base (env/kf-challenge-bytes "x" thumb test-nonce)))))
+    (testing "different new-pubkey thumbprint → different bytes (swap-resistance)"
+      (is (not (ba= base (env/kf-challenge-bytes ref test-kf-pubkey test-nonce)))))
+    (testing "different nonce → different bytes (single-use)"
+      (is (not (ba= base (env/kf-challenge-bytes ref thumb test-key-id)))))))
+
 ;; -- base64url -------------------------------------------------------------
 
 (deftest b64url-known-vectors

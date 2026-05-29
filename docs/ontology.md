@@ -77,6 +77,23 @@ Notable:
 - A revoked pubkey is retained in the DB for audit. Signatures against it always fail (irrespective of grace).
 - Rotation produces *one* successor per predecessor at most. A second rotation creates a new successor that supersedes the first.
 
+### 4b. Knowledge-factor reclaim (recovery from a new device)
+
+Normally a pubkey enters an identity's cluster only via `bootstrap` (a *new* cluster) or `rotate-key` (signed by an existing key of *that* cluster). Reclaim adds a third, narrow entry path: a holder of the **knowledge factor** (a secret only the user knows) can attach a fresh device key to an *existing* identity from a device that has never held one of its keys.
+
+The identity stores a **verifier** — an Ed25519 public key the user derives client-side as `Argon2id(secret, salt)`, where `salt` is a domain-separated hash of the identity UUID (unique, not secret). The server keeps only `IV ‖ AES-256-GCM(kf-wrap-secret, kf-pubkey)`; the secret and the KF private key never leave the client. The KF attributes live on the `Identity`:
+
+```
+:identity/kf-verifier  bytes    IV(12) ‖ AES-256-GCM(kf-wrap-secret, kf-pubkey)
+:identity/kf-alg        keyword  :ed25519 (only value in v0.4.0)
+:identity/kf-kdf        keyword  :argon2id-v1 (fixed protocol constant; stored for versioning)
+:identity/kf-set-at     instant  when the verifier was set/replaced
+```
+
+These are sparse — absent ⇒ no knowledge factor ⇒ pure pre-v6 behavior. They sit on the Identity, so the erasure path (I9) that retracts the identity already covers them.
+
+A reclaim proof is **cryptographic-by-proxy** (§2): possession of the knowledge factor, proven by signing a challenge, is the gate for *re-attaching a key* — it is **not** a trust signal. Reclaim therefore grants **no tier uplift**: it attaches the new pubkey and leaves the spaced-continuity sketch (§6) untouched, so the reclaimed key inherits the identity's *earned* tier. You recover continuity, not free trust. This is the one exception to "pubkey-match is the only cluster-entry gate," and it is deliberate: the knowledge factor is itself a cryptographic gate, just keyed on something the user knows rather than something their device holds. Old keys are not auto-revoked at reclaim (the server cannot distinguish "lost device" from "second device"); the user revokes them explicitly via `revoke-key`.
+
 ## 5. Tuple lifecycle
 
 Tuples are append-only inside an identity's cluster. They have no retraction except via erasure. They are never re-bound to a different identity except via the host-link merge described in §8.

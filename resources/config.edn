@@ -141,6 +141,26 @@
                            :prod "/var/lib/continuity-auth/ip-hmac.key"}]
   :key-b64  #or [#env CONTINUITY_AUTH_IP_HMAC_KEY ""]}
 
+ ;; Server-side knowledge-factor verifier-wrap key (v6, /v1/set-verifier +
+ ;; /v1/recover-identity). The KF verifier (an Ed25519 public key derived
+ ;; client-side from the user's secret) is encrypted under this key with
+ ;; AES-256-GCM before storage, so a DB-only dump cannot mount an offline
+ ;; dictionary attack. SEPARATE from the IP-HMAC key (purpose separation).
+ ;; Same precedence as :ip-hmac:
+ ;;   1. CONTINUITY_AUTH_KF_WRAP_KEY (base64, 32 bytes) — direct env secret
+ ;;   2. :key-path (or CONTINUITY_AUTH_KF_WRAP_KEY_PATH) — EDN keyfile
+ ;;   3. If the path has no file: auto-generate 32 SecureRandom bytes,
+ ;;      write the EDN file with mode 0600, use it.
+ ;; The file MUST persist across restarts; losing it makes every stored
+ ;; verifier permanently unrecoverable (reclaim breaks; device-key auth is
+ ;; unaffected). Back it up alongside the Datalevin store and the IP-HMAC key.
+ :kf-wrap
+ {:key-path #or [#env CONTINUITY_AUTH_KF_WRAP_KEY_PATH
+                 #profile {:dev  "/tmp/continuity-auth-dev-kf-wrap.key"
+                           :test "/tmp/continuity-auth-test-kf-wrap.key"
+                           :prod "/var/lib/continuity-auth/kf-wrap.key"}]
+  :key-b64  #or [#env CONTINUITY_AUTH_KF_WRAP_KEY ""]}
+
  :observability
  {:metrics-enabled?     true
   :prometheus-bearer    #or [#env CONTINUITY_AUTH_PROM_BEARER ""]

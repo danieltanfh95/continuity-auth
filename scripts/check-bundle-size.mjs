@@ -8,18 +8,30 @@ import { gzipSize } from "gzip-size";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const DIST_DIR = path.join(ROOT, "dist", "npm");
-// 40 KB gzipped budget. The plan file originally specified 25 KB; that target
-// was set before measuring the cljs.core baseline. A minimal cljs library
-// after `:advanced` optimisation lands at ~20-25 KB gzipped because most of
-// `cljs.core` (PersistentVector, PersistentHashMap, keyword/symbol interning,
-// transducers, etc.) is reachable from any non-trivial code path. On top of
-// that base we ship: Web Crypto wrappers (Ed25519 + P-256), IndexedDB
-// CryptoKey persistence, browser-fingerprint signal collection (8 axes),
-// canonical envelope codec, multi-tab coordination, and a signed-fetch
-// wrapper. 40 KB is the measured ceiling that leaves room for incremental
-// growth (~7 KB) without immediately re-papering the budget. If the bundle
-// grows past 40 KB the right response is investigation, not a budget bump.
-const BUDGET_BYTES = 40 * 1024;
+// 64 KB gzipped budget. History: 25 KB (planned, pre-measurement) → 40 KB
+// (cljs.core baseline ~32 KB + Web Crypto wrappers, IndexedDB persistence,
+// 8-axis fingerprinting, envelope codec, multi-tab coord) → 64 KB (v0.4.0
+// knowledge-factor recovery).
+//
+// The v0.4.0 jump (~32 → ~60 KB measured) is the one place the client links
+// third-party crypto: Argon2id has no SubtleCrypto primitive, and an
+// Ed25519 public key cannot be derived from a raw seed via WebCrypto. The
+// added stack is paulmillr's pure-JS, dependency-free, audited libraries —
+// @noble/hashes (Argon2id + blake2s), @noble/ed25519 (KF keypair + sign),
+// @scure/bip39 (recovery-phrase encode/decode + the 2048-word English
+// list, which is itself most of the weight). These are bundled, not
+// CDN-loaded, so the supply-chain posture differs from the CDN scripts
+// `client.crypto` deliberately avoids.
+//
+// Trade-off accepted in 0.4.0: this all lands in the single `core.js`, so
+// even verify-only consumers download the KF stack. The KF path is COLD
+// (set-verifier / recover only) — the documented future optimisation is to
+// code-split it into a dynamically-imported chunk so the verify hot path
+// returns to ~32 KB and only recovery flows pull the crypto stack. Until
+// then, 64 KB is the measured ceiling (~60 KB + ~4 KB headroom). A further
+// bump should trigger investigation (or the code-split), not reflexive
+// re-papering.
+const BUDGET_BYTES = 64 * 1024;
 
 async function* walk(dir) {
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {

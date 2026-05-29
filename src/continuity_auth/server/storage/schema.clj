@@ -54,8 +54,21 @@
   `continuity-auth.server.identity.score`). Additive: existing identities
   read missing sketch fields as nil → a fresh-key sketch (clean-count 0)
   → score floor → :anonymous, i.e. everyone re-earns trust from the safe
-  default. No data rewrite — the migration only stamps the version."
-  5)
+  default. No data rewrite — the migration only stamps the version.
+
+  v6 (2026-05-29): optional knowledge-factor binding for identity reclaim
+  from a new device. Adds four sparse Identity attributes:
+  `:identity/kf-verifier` (bytes), `:identity/kf-alg` (keyword),
+  `:identity/kf-kdf` (keyword), `:identity/kf-set-at` (instant). The
+  verifier is `IV ‖ AES-256-GCM(kf-wrap-secret, kf-pubkey)` — an Ed25519
+  public key derived client-side from `Argon2id(secret, salt)`, then
+  wrapped under a server keystore secret so a DB-only dump leaves it
+  opaque (mirrors the `:tuple/ip-hash` membrane). The salt is derived from
+  the identity UUID, so no salt is stored. Absent ⇒ no knowledge factor
+  set ⇒ pure v5 behaviour. Additive — Datalevin picks up the new attrs on
+  open; no data rewrite. See `continuity-auth.server.crypto.verifier-box`
+  and `continuity-auth.server.http.handlers.{set-verifier,recover-identity}`."
+  6)
 
 (def schema
   "Datalevin attribute schema, one entry per attribute. The schema is
@@ -106,6 +119,28 @@
     :db/index     true}                     ; last reinforcing verify
 
    :identity/erased-at
+   {:db/valueType :db.type/instant
+    :db/index     true}
+
+   ;; -- knowledge-factor binding (v6, optional identity reclaim) ----------
+   ;; A user-set secret-derived verifier that lets the same identity be
+   ;; reclaimed from a new device. `:identity/kf-verifier` is
+   ;; `IV(12) ‖ AES-256-GCM(kf-wrap-secret, kf-pubkey)` — an Ed25519 public
+   ;; key derived client-side from `Argon2id(secret, salt)`, wrapped under
+   ;; the server's kf-wrap keystore secret so a DB-only dump cannot mount an
+   ;; offline dictionary attack (no verifier to check guesses against). The
+   ;; salt is derived from the identity UUID, so it is NOT stored. All four
+   ;; attrs are sparse: absent ⇒ no knowledge factor ⇒ reclaim impossible.
+   :identity/kf-verifier
+   {:db/valueType :db.type/bytes}
+
+   :identity/kf-alg
+   {:db/valueType :db.type/keyword}          ; :ed25519 (only value in v6)
+
+   :identity/kf-kdf
+   {:db/valueType :db.type/keyword}          ; :argon2id-v1
+
+   :identity/kf-set-at
    {:db/valueType :db.type/instant
     :db/index     true}
 
@@ -344,4 +379,5 @@
   deltas; the merge and score namespaces must agree."
   #{:pubkey-match :host-link-committed :ip-mismatch :fp-mismatch
     :all-mismatch :anomaly :decay :erasure-requested :admin-reset
-    :bootstrap :rotate-key :revoke-key :admin-revoke})
+    :bootstrap :rotate-key :revoke-key :admin-revoke
+    :set-verifier :recover-identity})

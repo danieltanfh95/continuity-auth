@@ -288,3 +288,41 @@
               (protocol/close storage))))
         (finally
           (delete-recursively dir))))))
+
+(deftest v5-to-v6-migration-adds-kf-verifier-attrs
+  (testing "v5→v6 is additive: stamps version 6, no data rewrite, and the
+            new knowledge-factor verifier attrs become writable."
+    (let [dir  (temp-dir)
+          path (.toString dir)]
+      (try
+        ;; Seed a v5 store: legacy v2 fixture, then migrate up through v5.
+        (seed-v2-store! path ["203.0.113.11"])
+        (let [storage (dtlv/open path)]
+          (try
+            (runner/migrate! storage {:ip-hmac-key fixed-key} 5)
+            (let [result (runner/migrate! storage {} 6)]
+              (is (= :upgraded result))
+              (testing "schema-version is now 6"
+                (let [v (->> (protocol/q storage (protocol/snapshot storage)
+                                         '[:find [?v ...]
+                                           :where [_ :schema/version ?v]] [])
+                             sort last)]
+                  (is (= 6 v))))
+              (testing "an identity with the KF verifier attrs writes cleanly"
+                (protocol/transact! storage
+                                    [{:identity/id          (random-uuid)
+                                      :identity/kf-verifier (byte-array 60 (unchecked-byte 7))
+                                      :identity/kf-alg      :ed25519
+                                      :identity/kf-kdf      :argon2id-v1
+                                      :identity/kf-set-at   (java.util.Date.)}])
+                (let [kdf (->> (protocol/q storage (protocol/snapshot storage)
+                                           '[:find [?k ...]
+                                             :where [?i :identity/kf-kdf ?k]] [])
+                               first)]
+                  (is (= :argon2id-v1 kdf))))
+              (testing "re-running v5→v6 is idempotent (:ok)"
+                (is (= :ok (runner/migrate! storage {} 6)))))
+            (finally
+              (protocol/close storage))))
+        (finally
+          (delete-recursively dir))))))

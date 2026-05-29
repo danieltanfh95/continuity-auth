@@ -177,6 +177,60 @@ No grace window. The key is rejected from the next request onward. The identity 
 
 **Errors:** `E_BAD_REQUEST`, `E_UNAUTHORIZED`, `E_FORBIDDEN`, `E_REPLAY`.
 
+### `POST /v1/set-verifier`
+
+Bind a **knowledge factor** (a secret only the user knows) to the current identity so it can be reclaimed from a new device. Device-authenticated: the envelope is signed with the current device key, intent-bound to the knowledge-factor public key. The client derives an Ed25519 keypair `Argon2id(secret, salt)` (salt = a domain-separated hash of the identity UUID) and sends only the **public** key; the secret and the KF private key never leave the browser. Setting a verifier when one already exists overwrites it (re-bind), gated by the device key.
+
+**Request body:**
+
+```json
+{
+  "envelope":  { /* wire envelope, signed by the DEVICE key, path "/v1/set-verifier",
+                    body-sha256 = sha256(set-verifier-intent(kf-pubkey, kf-alg)) */ },
+  "kf-pubkey": "<base64url canonical Ed25519 pubkey bytes>",
+  "kf-alg":    "ed25519"
+}
+```
+
+**Response (200):** `{ "ok": true, "kf_set_at": "2026-05-25T13:34:56.789Z" }`
+
+The server stores `IV ‖ AES-256-GCM(kf-wrap-secret, kf-pubkey)` — a DB-only dump yields opaque ciphertext, blocking an offline dictionary attack (threat-model T20). The verifier lives on the Identity, so the erasure path already covers it.
+
+**Errors:** `E_BAD_REQUEST` (missing fields, `kf-alg` not `ed25519`), `E_UNAUTHORIZED` (sig / route binding), `E_REPLAY`.
+
+### `POST /v1/recover-identity`
+
+Reclaim an existing identity from a NEW device using the recovery phrase + the knowledge-factor secret. Two signatures, two roles: the **new-key envelope** proves possession of the new private key and supplies route/nonce/timestamp binding (single-use via the nonce cache), exactly like `/v1/bootstrap`; the **kf-sig** proves the knowledge factor — an Ed25519 signature, by the secret-derived key, over `kf-challenge(identity-ref, new-pubkey-thumbprint, envelope-nonce)`. Binding to the new key's thumbprint stops an eavesdropper from swapping in their own pubkey.
+
+The `identity-ref` is the identity UUID; clients present it to the user as a 12-word BIP-39 mnemonic (encode/decode is client-side only — the server works in UUIDs).
+
+**Request body:**
+
+```json
+{
+  "identity-ref": "<UUID string; decoded client-side from the mnemonic>",
+  "new-pubkey":   "<base64url canonical bytes of the NEW device pubkey>",
+  "new-alg":      "ed25519",
+  "kf-alg":       "ed25519",
+  "kf-sig":       "<base64url Ed25519 signature over the kf-challenge>",
+  "envelope":     { /* wire envelope signed by the NEW key, path "/v1/recover-identity",
+                       body-sha256 = sha256(recover-intent(identity-ref, new-pubkey, kf-sig)) */ }
+}
+```
+
+**Response (200):**
+
+```json
+{ "ok": true,
+  "identity_ref": "<same UUID>",
+  "tier":         "<tier of the reclaimed identity>",
+  "new_key_id":   "<base64url thumbprint of the new pubkey>" }
+```
+
+Reclaim attaches the new pubkey to the existing identity and leaves its spaced-continuity sketch untouched, so the reclaimed key inherits the **earned** tier — recovery grants continuity, not uplift. Old keys are NOT auto-revoked (the server can't distinguish "lost" from "second device"); revoke them explicitly via `/v1/revoke-key`.
+
+**Errors:** `E_BAD_REQUEST` (malformed fields, `kf-alg` not `ed25519`, malformed `identity-ref`), `E_UNAUTHORIZED`, `E_REPLAY` (envelope nonce reused), `E_CONFLICT` (new pubkey already registered). Per threat-model T10, **every** proof failure — new-key sig / route binding, unknown identity, no verifier set, invalid kf-sig, verifier-unwrap failure — collapses to a uniform `E_UNAUTHORIZED`: an attacker learns neither which check failed nor whether the identity exists.
+
 ### `POST /v1/admin/revoke-key`
 
 Operator-initiated revocation by thumbprint. HMAC-authenticated, no user signature required. This is the escape hatch for compromised keys whose holders can no longer (or won't) sign a `/v1/revoke-key` envelope.

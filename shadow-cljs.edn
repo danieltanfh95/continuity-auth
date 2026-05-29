@@ -25,7 +25,9 @@
                                        bootstrap        continuity-auth.client.core/bootstrap!
                                        signFetch        continuity-auth.client.core/sign-fetch
                                        clear            continuity-auth.client.core/clear!
-                                       setHostUserId    continuity-auth.client.core/set-host-user-id!}}}
+                                       setHostUserId    continuity-auth.client.core/set-host-user-id!
+                                       setVerifier      continuity-auth.client.core/set-verifier!
+                                       recover          continuity-auth.client.core/recover!}}}
    :compiler-options {:infer-externs    :auto
                       :elide-asserts    true
                       :output-feature-set :es2020}

@@ -262,6 +262,62 @@
   [^bytes new-pubkey-bytes new-alg]
   (utf8-encode (str (b64url-encode new-pubkey-bytes) ":" (name new-alg))))
 
+(defn set-verifier-intent-utf8
+  "UTF-8 bytes of the set-verifier intent string. The client signs a
+  set-verifier envelope (with the DEVICE key) whose `:body-sha256` is
+  `sha256(this)`; the server reconstructs it from `(kf-pubkey-bytes,
+  kf-alg)` in the request payload. Binding the device signature to the
+  exact knowledge-factor pubkey stops a captured envelope from installing
+  a DIFFERENT verifier.
+
+  Shape: `\"<b64url(kf-pubkey-bytes)>:<name(kf-alg)>\"`.
+
+  Producer: cljs client (set-verifier signer). Consumer: server
+  `handlers/set-verifier`. Contract: byte-identical on both platforms."
+  [^bytes kf-pubkey-bytes kf-alg]
+  (utf8-encode (str (b64url-encode kf-pubkey-bytes) ":" (name kf-alg))))
+
+(defn recover-intent-utf8
+  "UTF-8 bytes of the recover-identity intent string. The NEW device's
+  bootstrap-style envelope signs `:body-sha256 = sha256(this)`, attesting
+  the whole reclaim request: which identity, which new key, and the exact
+  knowledge-factor signature being presented. The server reconstructs it
+  from the request payload and route-binds the new-key envelope to it.
+
+  Shape: `\"<identity-ref>:<b64url(new-pubkey-bytes)>:<b64url(kf-sig-bytes)>\"`.
+
+  Producer: cljs client (recover signer). Consumer: server
+  `handlers/recover-identity`. Contract: byte-identical on both platforms."
+  [^String identity-ref ^bytes new-pubkey-bytes ^bytes kf-sig-bytes]
+  (utf8-encode (str identity-ref ":"
+                    (b64url-encode new-pubkey-bytes) ":"
+                    (b64url-encode kf-sig-bytes))))
+
+(def ^:const kf-challenge-tag-str
+  "Domain-separation tag for the knowledge-factor challenge bytes. Distinct
+  from the envelope `version-tag-str` so a KF signature can never be
+  confused with an envelope signature."
+  "FPLKF1\n")
+
+(defn kf-challenge-bytes
+  "Build the byte string the knowledge-factor key signs during reclaim.
+
+  Length-prefixed (uint32-BE), domain-tagged binary over:
+    `kf-challenge-tag` ‖ identity-ref-utf8 ‖ new-pubkey-thumbprint(32)
+                       ‖ nonce(16)
+
+  Binding to the new pubkey's thumbprint stops an eavesdropper from
+  swapping in their own key; binding to the envelope nonce makes the proof
+  single-use via the existing nonce cache. Byte-identical on client/server."
+  [^String identity-ref new-pubkey-thumbprint nonce]
+  (let [tag      (utf8-encode kf-challenge-tag-str)
+        ident-b  (utf8-encode identity-ref)]
+    (concat-bytes
+     (concat [tag]
+             (prefixed ident-b)
+             (prefixed new-pubkey-thumbprint)
+             (prefixed nonce)))))
+
 ;; -- envelope ↔ wire --------------------------------------------------------
 
 (def required-envelope-keys
